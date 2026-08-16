@@ -1,0 +1,21 @@
+# Secrets — never commit real credentials
+.env
+*.env
+!.env.example
+
+# Local data generated at runtime — contains real (or test) evidence and
+# assessment history, should not end up in version control
+verifai360.db
+evidence_store/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+
+# OS/editor cruft
+.DS_Store
+.vscode/
+.idea/

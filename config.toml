@@ -1,0 +1,14 @@
+# Native Streamlit theme — complements the custom CSS injected in app.py.
+[theme]
+base = "dark"
+primaryColor = "#35d0c0"
+backgroundColor = "#0e1420"
+secondaryBackgroundColor = "#141c2b"
+textColor = "#e7ecf5"
+font = "sans serif"
+
+# Defense-in-depth: cap upload size at the Streamlit server layer too,
+# not just in compliance_engine.MAX_EVIDENCE_FILE_BYTES, so oversized
+# uploads are rejected before they even reach our code.
+[server]
+maxUploadSize = 25

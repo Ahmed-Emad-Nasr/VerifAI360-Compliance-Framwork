@@ -1,0 +1,19 @@
+Role,System,Access Level,Business Justification,Approved By,Review Date
+SOC Analyst,SIEM (Splunk),Read-only,Monitoring and alert triage,J. Hassan (SOC Manager),2026-06-01
+DBA,Payment DB Cluster,Read/Write (prod),Database maintenance,M. Fathy (IT Director),2026-06-01
+Developer,Payment DB Cluster,No Access,Not required for role,M. Fathy (IT Director),2026-06-01
+Network Engineer,Firewall Management Console,Admin,NSC rule management,A. Nabil (Infra Manager),2026-06-01
+Support Agent,CRM (non-CDE),Read/Write,Customer support tickets,S. Adel (Support Lead),2026-06-01
+Support Agent,Payment DB Cluster,No Access,Not required for role,S. Adel (Support Lead),2026-06-01
+Finance Analyst,Reporting Warehouse (tokenized),Read-only,Monthly reconciliation,H. Youssef (Finance Manager),2026-05-15
+Contractor - Vendor X,VPN Jump Host,Time-limited (30 days),Scoped integration project,A. Nabil (Infra Manager),2026-07-20
+
+Notes:
+- Access reviews are performed quarterly; this export reflects the Q2 2026
+  review cycle (completed 2026-06-01), except the contractor row which was
+  provisioned mid-quarter with an explicit 30-day expiry in the IAM system.
+- Role-based access control (RBAC) enforced via central IAM (Okta) groups;
+  no direct/local account access is permitted to the Payment DB Cluster.
+- Terminated employees are removed from all access groups automatically
+  via the HR-to-IAM deprovisioning workflow (SLA: within 4 business hours
+  of termination event).

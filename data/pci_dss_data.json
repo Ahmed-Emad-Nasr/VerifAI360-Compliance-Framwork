@@ -1,0 +1,518 @@
+{
+  "_disclaimer": "This dataset is an ORIGINAL, condensed paraphrase of the public PCI DSS v4.0 requirement structure, written for use as demo/training data in this student project. It is NOT a reproduction of the official PCI Security Standards Council (PCI SSC) document, is NOT complete, and MUST NOT be used as an authoritative compliance reference. Before any real assessment, the official PCI DSS v4.0.1 standard must be purchased/downloaded from https://www.pcisecuritystandards.org and used as the source of truth.",
+  "requirements": [
+    {
+      "id": "1",
+      "title": "Install and Maintain Network Security Controls",
+      "sub_requirements": [
+        {
+          "id": "1.1",
+          "title": "Processes and mechanisms for network security controls",
+          "summary": "Documented, up-to-date network security policies and role responsibilities exist and are known to affected staff.",
+          "evidence_keywords": ["network security policy", "firewall policy", "roles and responsibilities", "policy review date"],
+          "example_evidence": ["Network security policy document", "Org chart / RACI for network security"]
+        },
+        {
+          "id": "1.2",
+          "title": "Network security control configuration",
+          "summary": "Firewalls/routers (NSCs) are configured, with a current network diagram, to restrict traffic to only what is necessary for the cardholder data environment (CDE).",
+          "evidence_keywords": ["firewall rule", "ACL", "network diagram", "NSC configuration", "data flow diagram"],
+          "example_evidence": ["Firewall rule-base export", "Network/data-flow diagrams"]
+        },
+        {
+          "id": "1.3",
+          "title": "Restricting connections to/from the CDE",
+          "summary": "Inbound/outbound traffic to the CDE is restricted to only necessary, authorized traffic; direct public access to CDE components is prevented.",
+          "evidence_keywords": ["DMZ", "inbound rule", "outbound rule", "CDE segmentation", "public IP restriction"],
+          "example_evidence": ["Segmentation test report", "Firewall rule review"]
+        },
+        {
+          "id": "1.4",
+          "title": "Controls between trusted/untrusted networks",
+          "summary": "Controls exist between the CDE and untrusted networks (e.g., the internet), including anti-spoofing measures.",
+          "evidence_keywords": ["anti-spoofing", "untrusted network control", "perimeter firewall"],
+          "example_evidence": ["Perimeter device configuration screenshot"]
+        },
+        {
+          "id": "1.5",
+          "title": "Risk mitigation for computing devices connecting to multiple networks",
+          "summary": "Laptops/mobile devices with independent connectivity that also connect to the CDE have controls to mitigate risk.",
+          "evidence_keywords": ["personal firewall", "endpoint control", "split tunneling"],
+          "example_evidence": ["Endpoint protection policy", "VPN client configuration"]
+        }
+      ]
+    },
+    {
+      "id": "2",
+      "title": "Apply Secure Configurations to All System Components",
+      "sub_requirements": [
+        {
+          "id": "2.1",
+          "title": "Processes/mechanisms for secure configurations",
+          "summary": "Documented configuration standards and role responsibilities exist for hardening systems.",
+          "evidence_keywords": ["configuration standard", "hardening policy", "baseline"],
+          "example_evidence": ["Configuration hardening policy"]
+        },
+        {
+          "id": "2.2",
+          "title": "System components configured and managed securely",
+          "summary": "Configuration standards are developed, applied, and kept updated for all system components, addressing known security parameters (e.g., disabling unnecessary services).",
+          "evidence_keywords": ["hardening standard", "CIS benchmark", "STIG", "disabled services", "baseline image"],
+          "example_evidence": ["CIS/STIG hardening checklist output", "Server build standard"]
+        },
+        {
+          "id": "2.3",
+          "title": "Wireless environments configured securely",
+          "summary": "Wireless vendor defaults are changed and wireless environments are configured securely.",
+          "evidence_keywords": ["wireless", "WPA2", "WPA3", "SSID", "default password change"],
+          "example_evidence": ["Wireless network configuration screenshot"]
+        }
+      ]
+    },
+    {
+      "id": "3",
+      "title": "Protect Stored Account Data",
+      "sub_requirements": [
+        {
+          "id": "3.1",
+          "title": "Processes/mechanisms for protecting stored account data",
+          "summary": "Data retention/disposal and protection policies for stored account data are documented and followed.",
+          "evidence_keywords": ["data retention policy", "data disposal", "account data policy"],
+          "example_evidence": ["Data retention and disposal policy"]
+        },
+        {
+          "id": "3.2",
+          "title": "Storage of account data is minimized",
+          "summary": "Account data storage is limited to what is necessary, per documented retention/disposal requirements.",
+          "evidence_keywords": ["data minimization", "retention schedule", "secure deletion"],
+          "example_evidence": ["Data inventory / data flow report"]
+        },
+        {
+          "id": "3.3",
+          "title": "Sensitive authentication data (SAD) is not stored after authorization",
+          "summary": "Full track data, CVV/CVC, and PIN data are not retained after authorization.",
+          "evidence_keywords": ["SAD", "CVV", "track data", "PIN block", "post-authorization"],
+          "example_evidence": ["Database schema review", "DLP scan report"]
+        },
+        {
+          "id": "3.4",
+          "title": "Primary Account Number (PAN) access/display is restricted",
+          "summary": "PAN is masked when displayed and access is restricted to those with a legitimate business need.",
+          "evidence_keywords": ["PAN masking", "truncation", "display restriction"],
+          "example_evidence": ["Screenshot of masked PAN in application"]
+        },
+        {
+          "id": "3.5",
+          "title": "PAN is secured wherever stored",
+          "summary": "PAN is rendered unreadable anywhere it is stored (e.g., via strong one-way hashing, tokenization, or strong encryption with key management).",
+          "evidence_keywords": ["encryption at rest", "tokenization", "hashing", "key management", "HSM"],
+          "example_evidence": ["Encryption configuration export", "Key management procedure"]
+        },
+        {
+          "id": "3.6",
+          "title": "Cryptographic keys protecting stored account data are secured",
+          "summary": "Key-management processes and procedures cover generation, distribution, storage, rotation and destruction of keys.",
+          "evidence_keywords": ["key rotation", "key generation", "key custodian", "dual control"],
+          "example_evidence": ["Key management policy", "HSM configuration"]
+        },
+        {
+          "id": "3.7",
+          "title": "Key-management processes support cryptographic key protection",
+          "summary": "Formal key-management processes exist covering the full key lifecycle.",
+          "evidence_keywords": ["key lifecycle", "key custodian agreement"],
+          "example_evidence": ["Key custodian sign-off forms"]
+        }
+      ]
+    },
+    {
+      "id": "4",
+      "title": "Protect Cardholder Data with Strong Cryptography During Transmission",
+      "sub_requirements": [
+        {
+          "id": "4.1",
+          "title": "Processes/mechanisms for protecting data in transit",
+          "summary": "Policies for protecting cardholder data during transmission over open, public networks are documented.",
+          "evidence_keywords": ["transmission security policy", "TLS policy"],
+          "example_evidence": ["Data-in-transit protection policy"]
+        },
+        {
+          "id": "4.2",
+          "title": "PAN is protected with strong cryptography during transmission",
+          "summary": "Strong cryptography (e.g., current TLS versions/ciphers) protects PAN when transmitted over open, public networks; only trusted keys/certificates accepted.",
+          "evidence_keywords": ["TLS 1.2", "TLS 1.3", "certificate", "cipher suite", "SSL scan"],
+          "example_evidence": ["TLS/SSL scan report", "Certificate inventory"]
+        }
+      ]
+    },
+    {
+      "id": "5",
+      "title": "Protect All Systems and Networks from Malicious Software",
+      "sub_requirements": [
+        {
+          "id": "5.1",
+          "title": "Processes/mechanisms for protection against malware",
+          "summary": "Anti-malware policies and responsibilities are documented and known.",
+          "evidence_keywords": ["anti-malware policy", "malware protection policy"],
+          "example_evidence": ["Anti-malware policy document"]
+        },
+        {
+          "id": "5.2",
+          "title": "Malicious software is prevented/detected/addressed",
+          "summary": "Anti-malware solutions are deployed on applicable system components and kept current.",
+          "evidence_keywords": ["antivirus", "EDR", "signature update", "malware scan"],
+          "example_evidence": ["AV/EDR console screenshot", "Scan logs"]
+        },
+        {
+          "id": "5.3",
+          "title": "Anti-malware mechanisms are actively running and monitored",
+          "summary": "Anti-malware runs continuously, cannot be disabled by users, and is monitored/logged.",
+          "evidence_keywords": ["real-time scanning", "tamper protection", "AV logs"],
+          "example_evidence": ["EDR policy configuration export"]
+        },
+        {
+          "id": "5.4",
+          "title": "Anti-phishing mechanisms protect users",
+          "summary": "Mechanisms exist to detect and protect personnel against phishing attacks.",
+          "evidence_keywords": ["phishing filter", "email security gateway", "phishing training"],
+          "example_evidence": ["Email security gateway configuration"]
+        }
+      ]
+    },
+    {
+      "id": "6",
+      "title": "Develop and Maintain Secure Systems and Software",
+      "sub_requirements": [
+        {
+          "id": "6.1",
+          "title": "Processes/mechanisms for secure systems and software",
+          "summary": "Secure development policies and roles are documented.",
+          "evidence_keywords": ["SDLC policy", "secure coding policy"],
+          "example_evidence": ["Secure SDLC policy document"]
+        },
+        {
+          "id": "6.2",
+          "title": "Bespoke/custom software is developed securely",
+          "summary": "Custom software follows secure coding standards and developer training addressing common vulnerability classes.",
+          "evidence_keywords": ["secure coding standard", "OWASP", "code review", "developer training"],
+          "example_evidence": ["Code review checklist", "Secure coding training records"]
+        },
+        {
+          "id": "6.3",
+          "title": "Security vulnerabilities are identified and addressed",
+          "summary": "Vulnerabilities are identified (via a recognized methodology / vulnerability intel) and patches applied within defined timeframes.",
+          "evidence_keywords": ["vulnerability scan", "patch management", "CVE", "patch SLA"],
+          "example_evidence": ["Vulnerability scan report", "Patch compliance report"]
+        },
+        {
+          "id": "6.4",
+          "title": "Public-facing web applications are protected",
+          "summary": "Public-facing web apps are reviewed regularly for vulnerabilities or protected by an automated technical solution (e.g., WAF).",
+          "evidence_keywords": ["WAF", "web application firewall", "web app pentest"],
+          "example_evidence": ["WAF configuration/logs", "Web app penetration test report"]
+        },
+        {
+          "id": "6.5",
+          "title": "Changes are managed securely",
+          "summary": "Change-management processes control changes to system components, including impact and rollback documentation.",
+          "evidence_keywords": ["change management", "change ticket", "rollback plan", "CAB approval"],
+          "example_evidence": ["Change management ticket/log export"]
+        }
+      ]
+    },
+    {
+      "id": "7",
+      "title": "Restrict Access to System Components and Cardholder Data by Business Need to Know",
+      "sub_requirements": [
+        {
+          "id": "7.1",
+          "title": "Processes/mechanisms for restricting access",
+          "summary": "Access control policies based on least privilege/need-to-know are documented.",
+          "evidence_keywords": ["access control policy", "least privilege policy"],
+          "example_evidence": ["Access control policy document"]
+        },
+        {
+          "id": "7.2",
+          "title": "Access is defined and assigned appropriately",
+          "summary": "An access control model defines access needs per role, and access is assigned based on job classification/function.",
+          "evidence_keywords": ["RBAC", "access matrix", "job classification", "role definition"],
+          "example_evidence": ["Role-based access matrix"]
+        },
+        {
+          "id": "7.3",
+          "title": "Access is managed via an access control system",
+          "summary": "An access control system enforces need-to-know and is configured to deny-by-default with periodic review.",
+          "evidence_keywords": ["access review", "deny by default", "IAM system", "periodic access recertification"],
+          "example_evidence": ["Access recertification report"]
+        }
+      ]
+    },
+    {
+      "id": "8",
+      "title": "Identify Users and Authenticate Access to System Components",
+      "sub_requirements": [
+        {
+          "id": "8.1",
+          "title": "Processes/mechanisms for identification and authentication",
+          "summary": "Identification/authentication policies and responsibilities are documented.",
+          "evidence_keywords": ["authentication policy", "identity management policy"],
+          "example_evidence": ["Identification & authentication policy"]
+        },
+        {
+          "id": "8.2",
+          "title": "User/device identification is managed",
+          "summary": "Unique IDs are assigned to all users and no shared/generic IDs are used for administrative access.",
+          "evidence_keywords": ["unique user ID", "shared account", "service account inventory"],
+          "example_evidence": ["User account listing export"]
+        },
+        {
+          "id": "8.3",
+          "title": "Strong authentication is established/managed",
+          "summary": "Strong authentication (passwords/passphrases meeting complexity, or other authentication factors) is enforced.",
+          "evidence_keywords": ["password policy", "complexity requirement", "password length", "authentication factor"],
+          "example_evidence": ["Password policy configuration screenshot"]
+        },
+        {
+          "id": "8.4",
+          "title": "Multi-factor authentication (MFA) is implemented",
+          "summary": "MFA is implemented for all access into the CDE and for all remote/administrative access.",
+          "evidence_keywords": ["MFA", "2FA", "multi-factor", "OTP", "authenticator app"],
+          "example_evidence": ["MFA configuration screenshot", "MFA enrollment report"]
+        },
+        {
+          "id": "8.5",
+          "title": "MFA systems are configured to prevent misuse",
+          "summary": "MFA systems are configured so they cannot be bypassed by unauthorized users.",
+          "evidence_keywords": ["MFA bypass prevention", "fail-secure MFA"],
+          "example_evidence": ["MFA system configuration export"]
+        },
+        {
+          "id": "8.6",
+          "title": "Authentication for application/system accounts is managed",
+          "summary": "Use of application and system accounts, and associated authentication factors, is strictly managed.",
+          "evidence_keywords": ["service account", "system account", "credential vaulting"],
+          "example_evidence": ["Privileged access management (PAM) configuration"]
+        }
+      ]
+    },
+    {
+      "id": "9",
+      "title": "Restrict Physical Access to Cardholder Data",
+      "sub_requirements": [
+        {
+          "id": "9.1",
+          "title": "Processes/mechanisms for physical access control",
+          "summary": "Physical security policies and responsibilities are documented.",
+          "evidence_keywords": ["physical security policy"],
+          "example_evidence": ["Physical security policy document"]
+        },
+        {
+          "id": "9.2",
+          "title": "Physical access controls manage entry to facilities",
+          "summary": "Controls (badge systems, visitor logs, video monitoring) restrict and monitor physical entry to sensitive areas.",
+          "evidence_keywords": ["badge access", "CCTV", "visitor log", "facility entry control"],
+          "example_evidence": ["Badge access log export", "CCTV coverage map"]
+        },
+        {
+          "id": "9.3",
+          "title": "Physical access for personnel and visitors is authorized/managed",
+          "summary": "Procedures distinguish personnel from visitors and control/monitor visitor access.",
+          "evidence_keywords": ["visitor badge", "escort policy", "visitor sign-in"],
+          "example_evidence": ["Visitor management log"]
+        },
+        {
+          "id": "9.4",
+          "title": "Media with cardholder data is securely stored/destroyed",
+          "summary": "Physical media containing cardholder data is classified, securely stored, and destroyed when no longer needed.",
+          "evidence_keywords": ["media destruction", "shredding", "secure storage", "media inventory"],
+          "example_evidence": ["Media destruction certificate"]
+        },
+        {
+          "id": "9.5",
+          "title": "Point-of-interaction (POI) devices are protected",
+          "summary": "POI devices are protected from tampering and unauthorized substitution.",
+          "evidence_keywords": ["POI device inspection", "tamper-evident", "device inventory"],
+          "example_evidence": ["POI device inspection log"]
+        }
+      ]
+    },
+    {
+      "id": "10",
+      "title": "Log and Monitor All Access to System Components and Cardholder Data",
+      "sub_requirements": [
+        {
+          "id": "10.1",
+          "title": "Processes/mechanisms for logging and monitoring",
+          "summary": "Logging and monitoring policies and responsibilities are documented.",
+          "evidence_keywords": ["logging policy", "monitoring policy"],
+          "example_evidence": ["Logging and monitoring policy"]
+        },
+        {
+          "id": "10.2",
+          "title": "Audit logs support detection of anomalies",
+          "summary": "Audit logs are enabled and capture events (user access, admin actions, system changes) for all system components.",
+          "evidence_keywords": ["audit log", "SIEM", "log source", "event logging"],
+          "example_evidence": ["SIEM log source inventory"]
+        },
+        {
+          "id": "10.3",
+          "title": "Audit logs are protected from destruction/unauthorized modification",
+          "summary": "Audit log files are protected via access controls, backups, and integrity monitoring.",
+          "evidence_keywords": ["log integrity", "log backup", "FIM", "write-once log storage"],
+          "example_evidence": ["Log retention/backup configuration"]
+        },
+        {
+          "id": "10.4",
+          "title": "Audit logs are reviewed to identify anomalies",
+          "summary": "Logs are reviewed daily (automated tools acceptable) with follow-up on exceptions.",
+          "evidence_keywords": ["log review", "SIEM alert", "daily review", "exception follow-up"],
+          "example_evidence": ["SIEM alert/review report"]
+        },
+        {
+          "id": "10.5",
+          "title": "Audit log history is retained/available",
+          "summary": "At least 12 months of audit log history is retained, with the most recent 3 months immediately available.",
+          "evidence_keywords": ["log retention period", "12 months", "archived logs"],
+          "example_evidence": ["Log retention configuration screenshot"]
+        },
+        {
+          "id": "10.6",
+          "title": "Time-synchronization mechanisms support log consistency",
+          "summary": "Systems use synchronized time (e.g., NTP) so log timestamps are consistent and reliable.",
+          "evidence_keywords": ["NTP", "time synchronization", "clock sync"],
+          "example_evidence": ["NTP configuration export"]
+        },
+        {
+          "id": "10.7",
+          "title": "Failures of critical security controls are detected/reported",
+          "summary": "Failures of critical security control systems (firewalls, IDS/IPS, AV, logging) are detected and responded to promptly.",
+          "evidence_keywords": ["control failure alert", "IDS/IPS failure", "AV failure alert"],
+          "example_evidence": ["Security control health/alerting dashboard"]
+        }
+      ]
+    },
+    {
+      "id": "11",
+      "title": "Test Security of Systems and Networks Regularly",
+      "sub_requirements": [
+        {
+          "id": "11.1",
+          "title": "Processes/mechanisms for security testing",
+          "summary": "Security testing policies and responsibilities (scanning, pentesting) are documented.",
+          "evidence_keywords": ["security testing policy", "pentest policy"],
+          "example_evidence": ["Security testing policy document"]
+        },
+        {
+          "id": "11.2",
+          "title": "Wireless access points are identified and monitored",
+          "summary": "Authorized/unauthorized wireless access points are identified on a defined schedule.",
+          "evidence_keywords": ["rogue AP scan", "wireless inventory"],
+          "example_evidence": ["Wireless access point scan report"]
+        },
+        {
+          "id": "11.3",
+          "title": "External/internal vulnerabilities are regularly identified",
+          "summary": "Internal and external vulnerability scans are performed on a defined schedule and after significant changes; high-risk items remediated.",
+          "evidence_keywords": ["ASV scan", "internal scan", "vulnerability remediation", "quarterly scan"],
+          "example_evidence": ["ASV/internal vulnerability scan report"]
+        },
+        {
+          "id": "11.4",
+          "title": "External/internal penetration testing is performed regularly",
+          "summary": "Penetration testing (network and application layer) is performed at least annually and after significant changes, with segmentation testing where applicable.",
+          "evidence_keywords": ["penetration test report", "segmentation test", "pentest scope"],
+          "example_evidence": ["Penetration test report"]
+        },
+        {
+          "id": "11.5",
+          "title": "Network intrusions and unexpected file changes are detected/responded to",
+          "summary": "Intrusion-detection/prevention and change-detection (file integrity monitoring) mechanisms are deployed and monitored.",
+          "evidence_keywords": ["IDS/IPS", "file integrity monitoring", "FIM alert"],
+          "example_evidence": ["IDS/IPS or FIM configuration/alert export"]
+        },
+        {
+          "id": "11.6",
+          "title": "Unauthorized changes on payment pages are detected",
+          "summary": "A change- and tamper-detection mechanism monitors payment page scripts/content for unauthorized modification.",
+          "evidence_keywords": ["payment page integrity", "script monitoring", "tamper detection"],
+          "example_evidence": ["Payment page monitoring tool report"]
+        }
+      ]
+    },
+    {
+      "id": "12",
+      "title": "Support Information Security with Organizational Policies and Programs",
+      "sub_requirements": [
+        {
+          "id": "12.1",
+          "title": "Comprehensive information security policy is established",
+          "summary": "An overarching information security policy is published, known, and reviewed at least annually.",
+          "evidence_keywords": ["information security policy", "annual review", "policy acknowledgment"],
+          "example_evidence": ["Corporate information security policy"]
+        },
+        {
+          "id": "12.2",
+          "title": "Acceptable use policies are documented",
+          "summary": "Acceptable-use policies for end-user technologies are defined and implemented.",
+          "evidence_keywords": ["acceptable use policy", "AUP"],
+          "example_evidence": ["Acceptable use policy document"]
+        },
+        {
+          "id": "12.3",
+          "title": "Risks are formally identified and managed",
+          "summary": "A formal risk-assessment process identifies, analyzes, and prioritizes risks to the CDE.",
+          "evidence_keywords": ["risk assessment", "risk register", "risk treatment plan"],
+          "example_evidence": ["Risk assessment report/register"]
+        },
+        {
+          "id": "12.4",
+          "title": "PCI DSS compliance is managed",
+          "summary": "Executive management assigns responsibility for maintaining/monitoring PCI DSS compliance.",
+          "evidence_keywords": ["compliance program charter", "executive sponsorship", "PCI DSS responsibility assignment"],
+          "example_evidence": ["Compliance program charter"]
+        },
+        {
+          "id": "12.5",
+          "title": "PCI DSS scope is documented and validated",
+          "summary": "The CDE scope is documented and validated at least annually and upon significant change.",
+          "evidence_keywords": ["scope document", "scoping review", "annual scope validation"],
+          "example_evidence": ["PCI DSS scope document"]
+        },
+        {
+          "id": "12.6",
+          "title": "Security awareness education is ongoing",
+          "summary": "A formal security awareness program educates personnel upon hire and at least annually.",
+          "evidence_keywords": ["security awareness training", "training completion record"],
+          "example_evidence": ["Security awareness training completion report"]
+        },
+        {
+          "id": "12.7",
+          "title": "Personnel are screened to reduce insider threat risk",
+          "summary": "Background checks are performed for personnel prior to hire, within legal constraints.",
+          "evidence_keywords": ["background check", "pre-employment screening"],
+          "example_evidence": ["Background screening policy"]
+        },
+        {
+          "id": "12.8",
+          "title": "Risk to information assets from third-party service providers is managed",
+          "summary": "Third-party service providers (TPSPs) with access to the CDE are identified, contractually bound, and monitored.",
+          "evidence_keywords": ["TPSP", "vendor risk", "service provider agreement", "AOC from vendor"],
+          "example_evidence": ["Vendor/TPSP compliance attestation"]
+        },
+        {
+          "id": "12.9",
+          "title": "Third-party service providers support their customers' PCI DSS compliance",
+          "summary": "TPSPs formally acknowledge responsibility for the security of account data they handle.",
+          "evidence_keywords": ["TPSP acknowledgment letter", "shared responsibility matrix"],
+          "example_evidence": ["TPSP responsibility acknowledgment"]
+        },
+        {
+          "id": "12.10",
+          "title": "Incident response is ready to be activated",
+          "summary": "An incident response plan is documented, tested, and ready to activate in case of a suspected/confirmed breach.",
+          "evidence_keywords": ["incident response plan", "IR tabletop exercise", "breach notification procedure"],
+          "example_evidence": ["Incident response plan document", "Tabletop exercise report"]
+        }
+      ]
+    }
+  ]
+}

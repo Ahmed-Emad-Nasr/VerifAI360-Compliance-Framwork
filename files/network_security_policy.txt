@@ -1,0 +1,47 @@
+NETWORK SECURITY CONTROL POLICY
+Document Owner: Head of Infrastructure Security
+Version: 3.2
+Last Reviewed: 2026-06-15 (reviewed annually every June by the Security Steering Committee)
+Approved by: CISO
+
+1. PURPOSE
+This policy governs the configuration, review, and change management of all
+network security controls (NSCs) — firewalls, routers, and cloud security
+groups — protecting the Cardholder Data Environment (CDE).
+
+2. ROLES AND RESPONSIBILITIES
+- Network Security Engineer: implements and maintains firewall rulesets.
+- Infrastructure Security Manager: approves all rule changes via the CAB
+  (Change Advisory Board) process before implementation.
+- Internal Audit: performs a semi-annual review of all NSC rulesets to
+  confirm they remain justified and documented.
+
+3. NETWORK DIAGRAM
+A current network diagram showing all connections between the CDE and other
+networks (including wireless) is maintained in the CMDB and reviewed at
+every quarterly architecture review. Last diagram update: 2026-07-01.
+
+4. FIREWALL / NSC CONFIGURATION STANDARDS
+- Default-deny inbound and outbound rule as the baseline for every NSC.
+- Any rule permitting traffic to/from the CDE must include a documented
+  business justification, requester, and approver, stored in ticket
+  CHG-40412 and equivalent change records.
+- Direct connections between the Internet and any system storing account
+  data are explicitly prohibited; all such traffic must pass through a
+  DMZ with proxy/inspection controls.
+- All NSC rulesets are reviewed every six months (last review: 2026-05-10,
+  ticket AUD-2201) to remove unused, insecure, or overly permissive rules.
+- Personal firewall software (or equivalent functionality) is required and
+  centrally managed on all portable/employee-owned devices that connect
+  to the CDE remotely.
+
+5. CHANGE MANAGEMENT
+All firewall/router configuration changes require a CAB-approved change
+ticket referencing this policy, a rollback plan, and post-change
+verification. Emergency changes are logged and retroactively reviewed
+within 24 hours.
+
+6. TRAINING
+All Network Security Engineers complete role-specific security training
+on NSC hardening annually; completion is tracked in the LMS (Learning
+Management System) with 100% completion for the current cycle.

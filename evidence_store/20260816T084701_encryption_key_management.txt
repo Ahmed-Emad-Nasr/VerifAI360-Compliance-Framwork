@@ -1,0 +1,35 @@
+CARDHOLDER DATA ENCRYPTION & KEY MANAGEMENT STANDARD
+Owner: Cryptographic Services Team
+Version: 1.4 — Last updated 2026-04-02
+
+1. DATA AT REST
+- Primary Account Numbers (PAN) are stored only in the tokenization
+  vault (TokenVault v5.2); no PAN is stored in application databases.
+- Where full PAN storage is unavoidable (vault itself), AES-256-GCM is
+  used with keys managed via AWS KMS (FIPS 140-2 validated HSM backing).
+- PAN is never stored in plaintext in logs; log scrubbing regex
+  (PAN_SCRUB_V3) is applied at the logging agent before any log leaves
+  the host. Quarterly log-sampling audits confirm no PAN leakage
+  (last audit: 2026-07-01, 0 findings across 50,000 sampled log lines).
+
+2. DATA IN TRANSIT
+- All connections carrying account data (internal service-to-service and
+  external) require TLS 1.2 or higher; TLS 1.0/1.1 and weak cipher
+  suites are disabled at the load balancer level, enforced via the
+  ssl_policy=TLS-1-2-2021 setting.
+- One exception currently exists: lb-pay-02 (legacy load balancer) still
+  has TLS 1.0 enabled — see linked vulnerability scan VULN-3313, target
+  remediation 2026-08-10.
+
+3. KEY MANAGEMENT
+- Key custodians: 2 individuals hold split-knowledge components for the
+  KMS master key backup, per dual-control requirement.
+- Cryptographic keys are rotated annually (last rotation: 2026-01-10) or
+  immediately upon suspected compromise.
+- Key rotation and access events are logged to the SIEM and alert the
+  crypto-ops on-call if an unauthorized key access attempt occurs.
+
+4. GAPS KNOWN TO THE TEAM
+- We do not yet have a formal, signed cryptographic architecture
+  document — the above is pulled from engineering wiki pages and this
+  standard has not been through a formal policy sign-off cycle.

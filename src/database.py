@@ -17,6 +17,7 @@ score_history        : one row per sub-requirement every time its score is
 import sqlite3
 import json
 import os
+import hashlib
 import datetime
 from contextlib import contextmanager
 
@@ -46,7 +47,8 @@ def init_db():
                 evidence_type TEXT,
                 uploaded_at TEXT NOT NULL,
                 target_sub_requirement TEXT,
-                raw_text_excerpt TEXT
+                raw_text_excerpt TEXT,
+                sha256 TEXT
             );
 
             CREATE TABLE IF NOT EXISTS sub_req_assessment (
@@ -88,18 +90,119 @@ def init_db():
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS cde_scope (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                system_name TEXT NOT NULL,
+                component_type TEXT,             -- Server / Application / Network device / Endpoint / Storage / Other
+                description TEXT,
+                in_scope INTEGER NOT NULL DEFAULT 1,   -- 1 = in CDE scope, 0 = documented as out of scope
+                connected_to_cde INTEGER NOT NULL DEFAULT 0,  -- "connected-to/security-impacting" per PCI DSS 4.0 scoping
+                data_flow_notes TEXT,             -- how cardholder data enters/exits/moves through this system
+                owner TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS compensating_controls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sub_requirement_id TEXT NOT NULL,
+                original_requirement_text TEXT,
+                constraint_reason TEXT,           -- why the standard control can't be implemented as-is
+                objective_met TEXT,                -- the control objective this control is meeting instead
+                compensating_control_description TEXT NOT NULL,
+                additional_risk TEXT,
+                validation_evidence TEXT,
+                reviewed_by TEXT,
+                review_date TEXT,
+                next_review_date TEXT,
+                status TEXT NOT NULL DEFAULT 'Draft',  -- Draft / Approved / Expired / Retired
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS testing_tracker (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                test_type TEXT NOT NULL,          -- ASV External Scan / Internal Vuln Scan / Penetration Test / Segmentation Test / Other
+                related_requirement TEXT,          -- e.g. '11.3', '11.4', '11.4.5'
+                scope_description TEXT,
+                frequency TEXT NOT NULL,           -- Quarterly / Semi-Annual / Annual / After significant change
+                last_performed_date TEXT,
+                next_due_date TEXT NOT NULL,
+                result_summary TEXT,
+                result_status TEXT,                -- Pass / Fail / Pass with exceptions / Not yet run
+                evidence_id INTEGER,               -- optional FK to evidence.id
+                owner TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (evidence_id) REFERENCES evidence(id) ON DELETE SET NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS vendor_register (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_name TEXT NOT NULL,
+                service_provided TEXT,
+                pci_dss_responsibility TEXT,       -- Vendor-managed / Shared / Merchant-managed
+                cde_connection TEXT,               -- How the vendor connects to / affects the CDE
+                compliance_status TEXT NOT NULL DEFAULT 'Unknown',  -- Compliant / Non-Compliant / Unknown / Expired
+                attestation_type TEXT,             -- AOC on file / SAQ on file / ROC on file / None
+                attestation_expiry TEXT,
+                last_reviewed_date TEXT,
+                next_review_due TEXT,
+                contract_reference TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
+        _migrate_add_missing_columns(conn)
 
 
-def insert_evidence(filename, stored_path, evidence_type, target_sub_requirement, raw_text_excerpt):
+def _migrate_add_missing_columns(conn):
+    """
+    Lightweight forward migration for DBs created before a column existed
+    (SQLite has no 'ADD COLUMN IF NOT EXISTS', so we check PRAGMA table_info
+    first). Keeps existing verifai360.db files working without a manual
+    reset when the schema grows.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(evidence)").fetchall()}
+    if "sha256" not in cols:
+        conn.execute("ALTER TABLE evidence ADD COLUMN sha256 TEXT")
+        _backfill_sha256(conn)
+
+
+def _backfill_sha256(conn):
+    """One-time backfill: compute real SHA-256 hashes for evidence rows uploaded before this
+    column existed, so old records don't just show blank/'None' in the Evidence Log and PDF
+    report. Silently skips rows whose stored file is no longer on disk."""
+    rows = conn.execute("SELECT id, stored_path FROM evidence WHERE sha256 IS NULL").fetchall()
+    for r in rows:
+        path = r["stored_path"]
+        if not path or not os.path.isfile(path):
+            continue
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        conn.execute("UPDATE evidence SET sha256 = ? WHERE id = ?", (h.hexdigest(), r["id"]))
+
+
+def insert_evidence(filename, stored_path, evidence_type, target_sub_requirement, raw_text_excerpt,
+                     sha256=None):
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO evidence
-               (filename, stored_path, evidence_type, uploaded_at, target_sub_requirement, raw_text_excerpt)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (filename, stored_path, evidence_type, uploaded_at, target_sub_requirement,
+                raw_text_excerpt, sha256)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (filename, stored_path, evidence_type, datetime.datetime.utcnow().isoformat(),
-             target_sub_requirement, raw_text_excerpt[:2000] if raw_text_excerpt else ""),
+             target_sub_requirement, raw_text_excerpt[:2000] if raw_text_excerpt else "", sha256),
         )
         return cur.lastrowid
 
@@ -240,5 +343,209 @@ def reset_all():
     with get_conn() as conn:
         conn.executescript(
             "DELETE FROM sub_req_assessment; DELETE FROM evidence; "
-            "DELETE FROM score_history; DELETE FROM risk_register;"
+            "DELETE FROM score_history; DELETE FROM risk_register; "
+            "DELETE FROM cde_scope; DELETE FROM compensating_controls; "
+            "DELETE FROM testing_tracker; DELETE FROM vendor_register;"
         )
+
+
+# ---------------------------------------------------------------------------
+# App settings (key/value) — used for SAQ type selection, AOC signer info, etc.
+# ---------------------------------------------------------------------------
+
+def get_setting(key, default=None):
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def set_setting(key, value):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+
+def get_settings_json(key, default=None):
+    raw = get_setting(key)
+    if raw is None:
+        return default
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def set_settings_json(key, value):
+    set_setting(key, json.dumps(value))
+
+
+# ---------------------------------------------------------------------------
+# CDE scope
+# ---------------------------------------------------------------------------
+
+def insert_cde_system(system_name, component_type, description, in_scope, connected_to_cde,
+                       data_flow_notes, owner):
+    now = datetime.datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO cde_scope
+               (system_name, component_type, description, in_scope, connected_to_cde,
+                data_flow_notes, owner, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (system_name, component_type, description, int(in_scope), int(connected_to_cde),
+             data_flow_notes, owner, now, now),
+        )
+        return cur.lastrowid
+
+
+def update_cde_system(item_id, **fields):
+    if not fields:
+        return
+    fields["updated_at"] = datetime.datetime.utcnow().isoformat()
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE cde_scope SET {set_clause} WHERE id = ?", (*fields.values(), item_id))
+
+
+def delete_cde_system(item_id):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM cde_scope WHERE id = ?", (item_id,))
+
+
+def get_all_cde_systems():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM cde_scope ORDER BY in_scope DESC, system_name").fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Compensating controls
+# ---------------------------------------------------------------------------
+
+def insert_compensating_control(sub_requirement_id, original_requirement_text, constraint_reason,
+                                 objective_met, compensating_control_description, additional_risk,
+                                 validation_evidence, reviewed_by, review_date, next_review_date,
+                                 status):
+    now = datetime.datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO compensating_controls
+               (sub_requirement_id, original_requirement_text, constraint_reason, objective_met,
+                compensating_control_description, additional_risk, validation_evidence,
+                reviewed_by, review_date, next_review_date, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (sub_requirement_id, original_requirement_text, constraint_reason, objective_met,
+             compensating_control_description, additional_risk, validation_evidence, reviewed_by,
+             review_date, next_review_date, status, now, now),
+        )
+        return cur.lastrowid
+
+
+def update_compensating_control(item_id, **fields):
+    if not fields:
+        return
+    fields["updated_at"] = datetime.datetime.utcnow().isoformat()
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE compensating_controls SET {set_clause} WHERE id = ?",
+                     (*fields.values(), item_id))
+
+
+def delete_compensating_control(item_id):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM compensating_controls WHERE id = ?", (item_id,))
+
+
+def get_all_compensating_controls():
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM compensating_controls ORDER BY sub_requirement_id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Recurring testing tracker (Requirement 11: ASV scans, pen tests, segmentation tests, ...)
+# ---------------------------------------------------------------------------
+
+def insert_test_item(test_type, related_requirement, scope_description, frequency,
+                      last_performed_date, next_due_date, result_summary, result_status,
+                      evidence_id, owner):
+    now = datetime.datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO testing_tracker
+               (test_type, related_requirement, scope_description, frequency, last_performed_date,
+                next_due_date, result_summary, result_status, evidence_id, owner, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (test_type, related_requirement, scope_description, frequency, last_performed_date,
+             next_due_date, result_summary, result_status, evidence_id, owner, now, now),
+        )
+        return cur.lastrowid
+
+
+def update_test_item(item_id, **fields):
+    if not fields:
+        return
+    fields["updated_at"] = datetime.datetime.utcnow().isoformat()
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE testing_tracker SET {set_clause} WHERE id = ?",
+                     (*fields.values(), item_id))
+
+
+def delete_test_item(item_id):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM testing_tracker WHERE id = ?", (item_id,))
+
+
+def get_all_test_items():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM testing_tracker ORDER BY next_due_date").fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Vendor / TPSP (third-party service provider) register
+# ---------------------------------------------------------------------------
+
+def insert_vendor(vendor_name, service_provided, pci_dss_responsibility, cde_connection,
+                   compliance_status, attestation_type, attestation_expiry, last_reviewed_date,
+                   next_review_due, contract_reference, notes):
+    now = datetime.datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO vendor_register
+               (vendor_name, service_provided, pci_dss_responsibility, cde_connection,
+                compliance_status, attestation_type, attestation_expiry, last_reviewed_date,
+                next_review_due, contract_reference, notes, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (vendor_name, service_provided, pci_dss_responsibility, cde_connection,
+             compliance_status, attestation_type, attestation_expiry, last_reviewed_date,
+             next_review_due, contract_reference, notes, now, now),
+        )
+        return cur.lastrowid
+
+
+def update_vendor(item_id, **fields):
+    if not fields:
+        return
+    fields["updated_at"] = datetime.datetime.utcnow().isoformat()
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE vendor_register SET {set_clause} WHERE id = ?",
+                     (*fields.values(), item_id))
+
+
+def delete_vendor(item_id):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM vendor_register WHERE id = ?", (item_id,))
+
+
+def get_all_vendors():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM vendor_register ORDER BY vendor_name").fetchall()
+        return [dict(r) for r in rows]

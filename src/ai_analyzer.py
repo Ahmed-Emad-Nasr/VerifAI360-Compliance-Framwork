@@ -118,9 +118,11 @@ class AIAnalyzerError(Exception):
     pass
 
 
-def _get_api_keys() -> list[str]:
+def _collect_api_keys() -> list[str]:
     """
-    Collects every configured Gemini API key, in priority order.
+    Collects every configured Gemini API key, in priority order, WITHOUT
+    raising if none are found (used both by _get_api_keys() below and by
+    the UI, which needs a non-raising way to show "N keys configured").
 
     Supports two ways of configuring multiple keys (either works, and they
     can be combined):
@@ -159,6 +161,16 @@ def _get_api_keys() -> list[str]:
             seen.add(k)
             unique_keys.append(k)
 
+    return unique_keys
+
+
+def get_key_count() -> int:
+    """Non-raising helper for the UI: how many distinct Gemini API keys are configured right now."""
+    return len(_collect_api_keys())
+
+
+def _get_api_keys() -> list[str]:
+    unique_keys = _collect_api_keys()
     if not unique_keys:
         raise AIAnalyzerError(
             "No Gemini API key is configured. Set GOOGLE_API_KEY (and "

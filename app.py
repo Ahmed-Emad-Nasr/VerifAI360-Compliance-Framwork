@@ -23,6 +23,9 @@ load_dotenv()
 from src import database as db
 from src import compliance_engine as ce
 from src import risk_engine as re_
+from src import report_generator as rg
+from src import ai_analyzer as ai
+from src import scoping_data as sd
 from src.ai_analyzer import AIAnalyzerError
 from src.evidence_processor import EvidenceExtractionError
 from src.compliance_engine import EvidenceUploadError
@@ -217,8 +220,13 @@ def _activate_demo():
 core_page = st.sidebar.radio(
     "Navigate",
     [
+        "🎯 SAQ Scoping",
         "📤 Upload & Analyze",
         "📊 Compliance Dashboard",
+        "🗺️ CDE Scope",
+        "🛡️ Compensating Controls",
+        "🧪 Testing Tracker (Req 11)",
+        "🤝 Vendor / TPSP Register",
         "⚠️ Identified Risks",
         "🕳️ Gap Report",
         "📚 Requirement Explorer",
@@ -251,15 +259,26 @@ page_raw = st.session_state["_active_page"]
 page = page_raw.split(" ", 1)[1] if page_raw and " " in page_raw else page_raw
 
 st.sidebar.divider()
-if not os.environ.get("GOOGLE_API_KEY"):
+_n_keys = ai.get_key_count()
+if _n_keys == 0:
     st.sidebar.warning(
         "GOOGLE_API_KEY is not set. Get a free key at aistudio.google.com/apikey "
         "and set it in a `.env` file to enable AI analysis."
     )
-else:
+elif _n_keys == 1:
     st.sidebar.markdown(
         '<div style="display:flex;align-items:center;gap:6px;color:#71e6ab;font-size:0.85rem;">'
         '🟢 Gemini API key detected</div>',
+        unsafe_allow_html=True,
+    )
+    st.sidebar.caption(
+        "💡 Add `GOOGLE_API_KEY_2` (a second free key from another Google account) to your `.env` "
+        "for automatic failover if this key's quota runs out."
+    )
+else:
+    st.sidebar.markdown(
+        f'<div style="display:flex;align-items:center;gap:6px;color:#71e6ab;font-size:0.85rem;">'
+        f'🟢 {_n_keys} Gemini API keys detected — automatic failover enabled</div>',
         unsafe_allow_html=True,
     )
 if st.sidebar.button("⚠️ Reset all demo data"):
@@ -371,10 +390,22 @@ if page == "Upload & Analyze":
 # PAGE: Compliance Dashboard
 # ----------------------------------------------------------------------------
 elif page == "Compliance Dashboard":
-    page_header("📊", "Compliance Dashboard", "Overall PCI DSS posture across all 12 requirements")
+    page_header("📊", "Compliance Dashboard", "Overall PCI DSS posture, scoped to your selected SAQ type")
     summary = ce.compute_compliance_summary()
+    saq_def = sd.get_saq_definition(summary["saq_type"])
     risks = db.get_all_risks()
     exposure = re_.risk_exposure_summary(risks)
+
+    if summary["saq_type"] == "Not yet determined":
+        st.warning(
+            "No SAQ type selected yet — showing all 12 requirements. Compliance % may be misleading "
+            "for anyone using a smaller SAQ than D. Pick your SAQ type on the **SAQ Scoping** page."
+        )
+    else:
+        st.info(
+            f"Scoped to **{saq_def['label']}** — in-scope requirements: "
+            f"{', '.join(summary['in_scope_requirement_ids'])}. Change this on the **SAQ Scoping** page."
+        )
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Overall PCI DSS compliance", f"{summary['overall_pct']}%")
@@ -388,15 +419,22 @@ elif page == "Compliance Dashboard":
     c4.metric("Open risk exposure", exposure["total_open_exposure"],
               help="Sum of (likelihood x impact) across every Open/Mitigating item in Identified Risks.")
 
+    in_scope_reqs = [r for r in summary["requirements"] if r["in_scope"]]
+    out_scope_reqs = [r for r in summary["requirements"] if not r["in_scope"]]
     df = pd.DataFrame(
-        [{"Requirement": f"{r['id']}. {r['title']}", "Compliance %": r["pct"]} for r in summary["requirements"]]
+        [{"Requirement": f"{r['id']}. {r['title']}", "Compliance %": r["pct"]} for r in in_scope_reqs]
     )
     fig = px.bar(df, x="Compliance %", y="Requirement", orientation="h", range_x=[0, 100],
                  color="Compliance %", color_continuous_scale=["#e5484d", "#e0a72e", "#3ecf8e"])
-    fig.update_layout(height=500, yaxis={"categoryorder": "total ascending"},
+    fig.update_layout(height=max(180, 60 * len(in_scope_reqs)), yaxis={"categoryorder": "total ascending"},
                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                        font_color="#e7ecf5")
     st.plotly_chart(fig, width='stretch')
+    if out_scope_reqs:
+        st.caption(
+            "Not applicable under the current SAQ type: " +
+            ", ".join(f"Req {r['id']}" for r in out_scope_reqs)
+        )
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -440,13 +478,476 @@ elif page == "Compliance Dashboard":
 
     st.subheader("Detail by requirement")
     for r in summary["requirements"]:
-        with st.expander(f"{r['id']}. {r['title']} — {r['pct']}%"):
+        pct_label = f"{r['pct']}%" if r["in_scope"] else "N/A (out of SAQ scope)"
+        label = f"{r['id']}. {r['title']} — {pct_label}"
+        with st.expander(label):
+            if not r["in_scope"]:
+                st.caption("Not applicable to the currently-selected SAQ type — excluded from compliance %.")
             sdf = pd.DataFrame(r["sub_requirements"])
             st.dataframe(sdf[["id", "title", "score", "status"]], width='stretch', hide_index=True)
+
+    st.divider()
+    rep_col1, rep_col2 = st.columns([3, 1])
+    with rep_col1:
+        st.subheader("📄 Full compliance report")
+        st.caption(
+            "One PDF: executive summary, SAQ scope, per-requirement scores, CDE scope, compensating "
+            "controls, recurring testing tracker, vendor register, gap report with remediation, "
+            "the identified-risks register, and the evidence log with SHA-256 integrity hashes."
+        )
+    with rep_col2:
+        st.write("")
+        st.download_button(
+            "⬇️ Download PDF report",
+            rg.generate_pdf_report(),
+            file_name=f"verifai360_compliance_report_{datetime.date.today().isoformat()}.pdf",
+            mime="application/pdf",
+            type="primary",
+            width='stretch',
+        )
+
+    st.divider()
+    st.subheader("✍️ Attestation of Compliance (AOC)")
+    st.caption(
+        "Generates a signature-ready AOC *summary* document from this tool's own scores — not the "
+        "official PCI SSC AOC template. Use the official template for any real submission."
+    )
+    with st.form("aoc_form"):
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            org_name = st.text_input("Organization (merchant/service provider) name",
+                                      value=db.get_setting("aoc_org_name", ""))
+            dba_name = st.text_input("DBA name", value=db.get_setting("aoc_dba_name", ""))
+            exec_name = st.text_input("Executive signer name", value=db.get_setting("aoc_exec_name", ""))
+            exec_title = st.text_input("Executive signer title", value=db.get_setting("aoc_exec_title", ""))
+        with ac2:
+            assessor_company = st.text_input("Assessor company (if QSA-assisted)",
+                                               value=db.get_setting("aoc_assessor_company", ""))
+            assessor_name = st.text_input("Assessor name (if QSA-assisted)",
+                                           value=db.get_setting("aoc_assessor_name", ""))
+            contact_email = st.text_input("Contact email", value=db.get_setting("aoc_contact_email", ""))
+            assessment_date = st.date_input("Assessment date", value=datetime.date.today())
+        generate_aoc = st.form_submit_button("Generate AOC PDF", type="primary")
+        if generate_aoc:
+            for key, val in [("aoc_org_name", org_name), ("aoc_dba_name", dba_name),
+                              ("aoc_exec_name", exec_name), ("aoc_exec_title", exec_title),
+                              ("aoc_assessor_company", assessor_company),
+                              ("aoc_assessor_name", assessor_name),
+                              ("aoc_contact_email", contact_email)]:
+                db.set_setting(key, val)
+            st.session_state["_aoc_bytes"] = rg.generate_aoc_pdf({
+                "organization_name": org_name, "dba_name": dba_name,
+                "executive_name": exec_name, "executive_title": exec_title,
+                "assessor_company": assessor_company, "assessor_name": assessor_name,
+                "contact_email": contact_email, "assessment_date": str(assessment_date),
+            })
+    if st.session_state.get("_aoc_bytes"):
+        st.download_button(
+            "⬇️ Download AOC PDF",
+            st.session_state["_aoc_bytes"],
+            file_name=f"verifai360_aoc_{datetime.date.today().isoformat()}.pdf",
+            mime="application/pdf",
+        )
 
 # ----------------------------------------------------------------------------
 # PAGE: Identified Risks
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# PAGE: SAQ Type Selection & Scoping
+# ----------------------------------------------------------------------------
+elif page == "SAQ Scoping":
+    page_header("🎯", "SAQ Type Selection & Scoping",
+                "Pick the SAQ type that matches how you handle cardholder data — this determines "
+                "which of the 12 requirements are actually in scope")
+    current_saq = ce.get_current_saq_type()
+    st.warning(
+        "**Accuracy note:** the mapping below is a simplified approximation at the level of the 12 "
+        "top-level PCI DSS requirements, not the official question-by-question SAQ text. Confirm the "
+        "exact applicable requirements using the official SAQ document for your type at "
+        "pcisecuritystandards.org, and validate the correct SAQ type with your acquirer/QSA."
+    )
+
+    labels = {k: v["label"] for k, v in sd.SAQ_TYPES.items()}
+    options = list(sd.SAQ_TYPES.keys())
+    chosen = st.selectbox(
+        "SAQ type", options,
+        index=options.index(current_saq) if current_saq in options else 0,
+        format_func=lambda k: labels[k],
+    )
+    saq_def = sd.get_saq_definition(chosen)
+    st.markdown(f"**{saq_def['label']}**")
+    st.write(saq_def["description"])
+    st.caption(saq_def["notes"])
+    st.markdown(
+        "**In-scope requirements:** " +
+        ", ".join(f"Req {i}" for i in saq_def["applicable_requirements"])
+    )
+    not_applicable = [str(i) for i in range(1, 13) if str(i) not in saq_def["applicable_requirements"]]
+    if not_applicable:
+        st.markdown("**Not applicable for this SAQ type:** " + ", ".join(f"Req {i}" for i in not_applicable))
+
+    if st.button("💾 Save SAQ type", type="primary"):
+        ce.set_current_saq_type(chosen)
+        st.success(f"SAQ type set to {saq_def['label']}. The Compliance Dashboard and PDF report now "
+                   f"reflect this scope.")
+        st.rerun()
+
+    st.divider()
+    st.subheader("All SAQ types at a glance")
+    overview_rows = [
+        {"SAQ type": v["label"], "In-scope requirements": ", ".join(v["applicable_requirements"])}
+        for k, v in sd.SAQ_TYPES.items() if k != "Not yet determined"
+    ]
+    st.dataframe(pd.DataFrame(overview_rows), width='stretch', hide_index=True)
+
+# ----------------------------------------------------------------------------
+# PAGE: CDE Scope Definition
+# ----------------------------------------------------------------------------
+elif page == "CDE Scope":
+    page_header("🗺️", "Cardholder Data Environment (CDE) Scope",
+                "Document what's in scope, what's out of scope, and what's connected-to/security-"
+                "impacting the CDE")
+    st.caption(
+        "PCI DSS v4.0 Requirement 1.2.4 expects a current, accurate inventory of in-scope systems "
+        "plus network and data-flow diagrams. This page tracks the system inventory; keep your "
+        "actual network/data-flow diagrams as evidence uploads or external documents."
+    )
+
+    with st.expander("➕ Add a system / component"):
+        with st.form("add_cde_form", clear_on_submit=True):
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                sys_name = st.text_input("System / component name*")
+                comp_type = st.selectbox(
+                    "Component type",
+                    ["Server", "Application", "Network device", "Endpoint", "Storage", "Cloud service", "Other"],
+                )
+                owner = st.text_input("Owner")
+            with cc2:
+                in_scope = st.selectbox("In CDE scope?", ["In scope", "Out of scope"]) == "In scope"
+                connected = st.selectbox(
+                    "Connected-to / security-impacting the CDE?", ["No", "Yes"]
+                ) == "Yes"
+            description = st.text_area("Description")
+            flow_notes = st.text_area("Data flow notes (how cardholder data enters/exits/moves through this system)")
+            submitted = st.form_submit_button("Add system")
+            if submitted:
+                if not sys_name.strip():
+                    st.error("System / component name is required.")
+                else:
+                    db.insert_cde_system(sys_name.strip(), comp_type, description, in_scope, connected,
+                                          flow_notes, owner or None)
+                    st.success("Added.")
+                    st.rerun()
+
+    items = db.get_all_cde_systems()
+    if not items:
+        st.info("No systems documented yet.")
+    else:
+        n_in = sum(1 for i in items if i["in_scope"])
+        n_conn = sum(1 for i in items if i["connected_to_cde"])
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total systems documented", len(items))
+        m2.metric("In CDE scope", n_in)
+        m3.metric("Connected-to / impacting", n_conn)
+
+        for it in items:
+            tag = "🔴 In scope" if it["in_scope"] else "⚪ Out of scope"
+            with st.expander(f"{tag} — {it['system_name']} ({it.get('component_type') or 'Other'})"):
+                st.write(it.get("description") or "_No description._")
+                if it.get("data_flow_notes"):
+                    st.markdown("**Data flow notes:**")
+                    st.write(it["data_flow_notes"])
+                st.caption(f"Owner: {it.get('owner') or '—'}  |  "
+                           f"Connected-to/impacting: {'Yes' if it['connected_to_cde'] else 'No'}")
+                bcol1, bcol2 = st.columns([1, 5])
+                with bcol1:
+                    if st.button("🗑️ Delete", key=f"del_cde_{it['id']}"):
+                        db.delete_cde_system(it["id"])
+                        st.rerun()
+
+        cdf = pd.DataFrame(items)[
+            ["id", "system_name", "component_type", "in_scope", "connected_to_cde", "owner"]
+        ]
+        st.download_button(
+            "⬇️ Export CDE scope as CSV",
+            cdf.to_csv(index=False).encode("utf-8"),
+            file_name="verifai360_cde_scope.csv",
+            mime="text/csv",
+        )
+
+# ----------------------------------------------------------------------------
+# PAGE: Compensating Controls Worksheet
+# ----------------------------------------------------------------------------
+elif page == "Compensating Controls":
+    page_header("🛡️", "Compensating Controls Worksheet",
+                "Document an alternative control when a standard requirement can't be implemented as written")
+    st.caption(
+        "Modeled on PCI DSS Appendix B/C guidance: a compensating control must meet the intent and "
+        "rigor of the original requirement, provide a similar level of defense, be above and beyond "
+        "other requirements, and be commensurate with the additional risk from not using the standard "
+        "control."
+    )
+
+    with st.expander("➕ Add a compensating control"):
+        opts, id_map = sub_req_options()
+        with st.form("add_cc_form", clear_on_submit=True):
+            sub_label = st.selectbox("Sub-requirement this applies to*", opts)
+            constraint_reason = st.text_area("Why can't the standard control be implemented as written?")
+            objective_met = st.text_area("Control objective this compensating control meets")
+            cc_description = st.text_area("Compensating control description*")
+            additional_risk = st.text_area("Additional risk introduced")
+            validation_evidence = st.text_input("Validation evidence reference (evidence log filename/ID)")
+            vc1, vc2, vc3 = st.columns(3)
+            with vc1:
+                reviewed_by = st.text_input("Reviewed by")
+            with vc2:
+                review_date = st.date_input("Review date", value=datetime.date.today())
+            with vc3:
+                next_review = st.date_input("Next review date", value=None)
+            status = st.selectbox("Status", ["Draft", "Approved", "Expired", "Retired"])
+            submitted = st.form_submit_button("Add compensating control")
+            if submitted:
+                sub_id = id_map.get(sub_label)
+                if not sub_id:
+                    st.error("Pick a specific sub-requirement (not 'let the AI decide').")
+                elif not cc_description.strip():
+                    st.error("Compensating control description is required.")
+                else:
+                    orig_text = None
+                    for r_ in pci_data["requirements"]:
+                        for s_ in r_["sub_requirements"]:
+                            if s_["id"] == sub_id:
+                                orig_text = s_["summary"]
+                    db.insert_compensating_control(
+                        sub_id, orig_text, constraint_reason, objective_met, cc_description.strip(),
+                        additional_risk, validation_evidence, reviewed_by or None,
+                        str(review_date) if review_date else None,
+                        str(next_review) if next_review else None, status,
+                    )
+                    st.success("Compensating control added.")
+                    st.rerun()
+
+    items = db.get_all_compensating_controls()
+    if not items:
+        st.info("No compensating controls documented yet.")
+    else:
+        for it in items:
+            with st.expander(f"[{it['sub_requirement_id']}] — {it['status']}"):
+                if it.get("original_requirement_text"):
+                    st.caption("Original requirement: " + it["original_requirement_text"])
+                if it.get("constraint_reason"):
+                    st.markdown("**Why the standard control can't be used:**")
+                    st.write(it["constraint_reason"])
+                st.markdown("**Compensating control:**")
+                st.write(it["compensating_control_description"])
+                if it.get("additional_risk"):
+                    st.markdown("**Additional risk:**")
+                    st.write(it["additional_risk"])
+                st.caption(
+                    f"Reviewed by {it.get('reviewed_by') or '—'} on {it.get('review_date') or '—'}  |  "
+                    f"Next review: {it.get('next_review_date') or '—'}"
+                )
+                bcol1, bcol2 = st.columns([1, 5])
+                with bcol1:
+                    if st.button("🗑️ Delete", key=f"del_cc_{it['id']}"):
+                        db.delete_compensating_control(it["id"])
+                        st.rerun()
+
+# ----------------------------------------------------------------------------
+# PAGE: Recurring Testing Tracker (Requirement 11)
+# ----------------------------------------------------------------------------
+elif page == "Testing Tracker (Req 11)":
+    page_header("🧪", "Recurring Testing Tracker",
+                "Requirement 11: ASV quarterly external scans, internal scans, annual penetration "
+                "tests, and segmentation testing — with due dates, not one-time evidence")
+    tt_summary = ce.testing_tracker_summary()
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("🔴 Overdue", tt_summary["Overdue"])
+    m2.metric("🟡 Due soon (≤14 days)", tt_summary["Due soon"])
+    m3.metric("🟢 On track", tt_summary["On track"])
+    m4.metric("No due date set", tt_summary["No due date set"])
+
+    with st.expander("➕ Add a recurring test"):
+        with st.form("add_test_form", clear_on_submit=True):
+            tc1, tc2 = st.columns(2)
+            with tc1:
+                test_type = st.selectbox(
+                    "Test type",
+                    ["ASV External Scan", "Internal Vulnerability Scan", "Penetration Test",
+                     "Segmentation Test", "Other"],
+                )
+                related_req = st.text_input("Related requirement (e.g. 11.3.1, 11.4.3)")
+                frequency = st.selectbox("Frequency", list(ce.TEST_FREQUENCY_DAYS.keys()))
+            with tc2:
+                owner = st.text_input("Owner")
+                last_performed = st.date_input("Last performed", value=None)
+                result_status = st.selectbox("Result status", ["Not yet run", "Pass", "Pass with exceptions", "Fail"])
+            scope_description = st.text_area("Scope description")
+            suggested = ce.suggest_next_due_date(str(last_performed) if last_performed else None, frequency)
+            next_due = st.date_input(
+                "Next due date*",
+                value=datetime.date.fromisoformat(suggested) if suggested else None,
+                help="Auto-suggested from last performed + frequency where possible; override as needed.",
+            )
+            result_summary = st.text_area("Result summary")
+            submitted = st.form_submit_button("Add test")
+            if submitted:
+                if not next_due:
+                    st.error("Next due date is required.")
+                else:
+                    db.insert_test_item(
+                        test_type, related_req or None, scope_description, frequency,
+                        str(last_performed) if last_performed else None, str(next_due),
+                        result_summary, result_status, None, owner or None,
+                    )
+                    st.success("Test added.")
+                    st.rerun()
+
+    items = db.get_all_test_items()
+    if not items:
+        st.info("No recurring tests tracked yet.")
+    else:
+        status_icon = {"Overdue": "🔴", "Due soon": "🟡", "On track": "🟢", "No due date set": "⚪"}
+        for it in items:
+            status = ce.testing_tracker_status(it.get("next_due_date"))
+            with st.expander(f"{status_icon[status]} {it['test_type']} — due {it.get('next_due_date') or '—'} ({status})"):
+                st.caption(
+                    f"Related requirement: {it.get('related_requirement') or '—'}  |  "
+                    f"Frequency: {it['frequency']}  |  Owner: {it.get('owner') or '—'}"
+                )
+                if it.get("scope_description"):
+                    st.write(it["scope_description"])
+                st.markdown(
+                    f"**Last performed:** {it.get('last_performed_date') or '—'}  ·  "
+                    f"**Result:** {it.get('result_status') or '—'}"
+                )
+                if it.get("result_summary"):
+                    st.write(it["result_summary"])
+
+                ec1, ec2 = st.columns(2)
+                new_last = ec1.date_input(
+                    "Update last performed", value=None, key=f"last_{it['id']}"
+                )
+                new_next = ec2.date_input(
+                    "Update next due", value=datetime.date.fromisoformat(it["next_due_date"]),
+                    key=f"next_{it['id']}"
+                )
+                bc1, bc2, bc3 = st.columns([1, 1, 4])
+                with bc1:
+                    if st.button("💾 Save", key=f"save_test_{it['id']}"):
+                        db.update_test_item(
+                            it["id"],
+                            last_performed_date=str(new_last) if new_last else it.get("last_performed_date"),
+                            next_due_date=str(new_next),
+                        )
+                        st.success("Updated.")
+                        st.rerun()
+                with bc2:
+                    if st.button("🗑️ Delete", key=f"del_test_{it['id']}"):
+                        db.delete_test_item(it["id"])
+                        st.rerun()
+
+        tdf = pd.DataFrame(items)[
+            ["id", "test_type", "related_requirement", "frequency", "last_performed_date",
+             "next_due_date", "result_status"]
+        ]
+        st.download_button(
+            "⬇️ Export testing tracker as CSV",
+            tdf.to_csv(index=False).encode("utf-8"),
+            file_name="verifai360_testing_tracker.csv",
+            mime="text/csv",
+        )
+
+# ----------------------------------------------------------------------------
+# PAGE: Vendor / TPSP Management Register
+# ----------------------------------------------------------------------------
+elif page == "Vendor / TPSP Register":
+    page_header("🤝", "Vendor / TPSP Management Register",
+                "Requirements 12.8 & 12.9 — third-party service providers, tracked separately from "
+                "general evidence")
+
+    with st.expander("➕ Add a vendor / TPSP"):
+        with st.form("add_vendor_form", clear_on_submit=True):
+            vc1, vc2 = st.columns(2)
+            with vc1:
+                vendor_name = st.text_input("Vendor name*")
+                service = st.text_input("Service provided")
+                responsibility = st.selectbox(
+                    "PCI DSS responsibility",
+                    ["Vendor-managed", "Shared", "Merchant-managed"],
+                )
+                compliance_status = st.selectbox(
+                    "Compliance status", ["Compliant", "Non-Compliant", "Unknown", "Expired"]
+                )
+            with vc2:
+                attestation_type = st.selectbox(
+                    "Attestation on file", ["AOC on file", "SAQ on file", "ROC on file", "None"]
+                )
+                attestation_expiry = st.date_input("Attestation expiry", value=None)
+                last_reviewed = st.date_input("Last reviewed", value=None)
+                next_review = st.date_input("Next review due", value=None)
+            cde_connection = st.text_area("How does this vendor connect to / affect the CDE?")
+            contract_ref = st.text_input("Contract reference")
+            notes = st.text_area("Notes")
+            submitted = st.form_submit_button("Add vendor")
+            if submitted:
+                if not vendor_name.strip():
+                    st.error("Vendor name is required.")
+                else:
+                    db.insert_vendor(
+                        vendor_name.strip(), service, responsibility, cde_connection, compliance_status,
+                        attestation_type, str(attestation_expiry) if attestation_expiry else None,
+                        str(last_reviewed) if last_reviewed else None,
+                        str(next_review) if next_review else None, contract_ref or None, notes,
+                    )
+                    st.success("Vendor added.")
+                    st.rerun()
+
+    vendors = db.get_all_vendors()
+    if not vendors:
+        st.info("No vendors documented yet.")
+    else:
+        status_color_map = {"Compliant": "🟢", "Non-Compliant": "🔴", "Unknown": "⚪", "Expired": "🟠"}
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total vendors", len(vendors))
+        m2.metric("Compliant", sum(1 for v in vendors if v["compliance_status"] == "Compliant"))
+        m3.metric("Needs attention", sum(1 for v in vendors if v["compliance_status"] in ("Non-Compliant", "Unknown", "Expired")))
+
+        for v in vendors:
+            icon = status_color_map.get(v["compliance_status"], "⚪")
+            with st.expander(f"{icon} {v['vendor_name']} — {v['compliance_status']}"):
+                st.caption(f"Service: {v.get('service_provided') or '—'}  |  "
+                           f"Responsibility: {v.get('pci_dss_responsibility') or '—'}  |  "
+                           f"Attestation: {v.get('attestation_type') or '—'}")
+                if v.get("cde_connection"):
+                    st.markdown("**CDE connection:**")
+                    st.write(v["cde_connection"])
+                if v.get("notes"):
+                    st.markdown("**Notes:**")
+                    st.write(v["notes"])
+                st.caption(
+                    f"Last reviewed: {v.get('last_reviewed_date') or '—'}  |  "
+                    f"Next review due: {v.get('next_review_due') or '—'}  |  "
+                    f"Contract ref: {v.get('contract_reference') or '—'}"
+                )
+                bcol1, bcol2 = st.columns([1, 5])
+                with bcol1:
+                    if st.button("🗑️ Delete", key=f"del_vendor_{v['id']}"):
+                        db.delete_vendor(v["id"])
+                        st.rerun()
+
+        vdf = pd.DataFrame(vendors)[
+            ["id", "vendor_name", "service_provided", "pci_dss_responsibility", "compliance_status",
+             "attestation_type", "next_review_due"]
+        ]
+        st.download_button(
+            "⬇️ Export vendor register as CSV",
+            vdf.to_csv(index=False).encode("utf-8"),
+            file_name="verifai360_vendor_register.csv",
+            mime="text/csv",
+        )
+
 elif page == "Identified Risks":
     page_header("⚠️", "Identified Risks",
                 "Internal risk items tracked from this tool — not your organization's official risk register")
@@ -640,8 +1141,16 @@ elif page == "Evidence Log":
     if not evidence:
         st.info("No evidence submitted yet.")
     else:
-        edf = pd.DataFrame(evidence)[["id", "filename", "evidence_type", "target_sub_requirement", "uploaded_at"]]
+        edf = pd.DataFrame(evidence)[
+            ["id", "filename", "evidence_type", "target_sub_requirement", "uploaded_at", "sha256"]
+        ]
+        edf["sha256"] = edf["sha256"].fillna("— (uploaded before integrity hashing was enabled)")
+        edf = edf.rename(columns={"sha256": "SHA-256 (integrity hash)"})
         st.dataframe(edf, width='stretch', hide_index=True)
+        st.caption(
+            "SHA-256 is computed from the stored file's actual bytes at upload time — a real "
+            "integrity hash you can use to verify a file on disk hasn't been altered since."
+        )
 
 # ----------------------------------------------------------------------------
 # PAGE: Automated Connectors (demo / roadmap mockup)
@@ -710,19 +1219,22 @@ elif page == "Alerts & Drift (demo)":
 elif page == "QSA Audit View (demo)":
     page_header("🧾", "QSA Audit View", "Roadmap concept — not a live integration")
     demo_banner(
-        "this is a UI concept for a future read-only auditor view. The compliance % below is real "
-        "(pulled from your actual data), but the file hashes and PDF export are placeholders — no "
-        "real hashing or PDF generation happens yet."
+        "this is a UI concept for a future read-only auditor view. The compliance %, evidence "
+        "hashes, and PDF export below are all real (pulled from your actual data). What's still "
+        "just a roadmap sketch is the rest of a proper QSA workflow — reviewer sign-off, sampling "
+        "notes, interview logs, and a locked-down read-only auditor login."
     )
 
     summary = ce.compute_compliance_summary()
     st.metric("Current compliance score", f"{summary['overall_pct']}%")
 
-    if st.button("📄 Generate audit PDF (not yet implemented)"):
-        st.info(
-            "PDF export isn't implemented yet. The `pdf` authoring skill/toolchain referenced in the "
-            "README would need to be wired up to render a real report from the data below."
-        )
+    st.download_button(
+        "📄 Generate audit PDF",
+        rg.generate_pdf_report(),
+        file_name=f"verifai360_audit_report_{datetime.date.today().isoformat()}.pdf",
+        mime="application/pdf",
+        type="primary",
+    )
 
     st.divider()
     st.subheader("Evidence submitted so far")
@@ -730,9 +1242,11 @@ elif page == "QSA Audit View (demo)":
     if not evidence:
         st.caption("No artifacts found.")
     else:
-        edf = pd.DataFrame(evidence)[["id", "filename", "uploaded_at", "target_sub_requirement"]]
+        edf = pd.DataFrame(evidence)[["id", "filename", "uploaded_at", "target_sub_requirement", "sha256"]]
+        edf["sha256"] = edf["sha256"].fillna("— (uploaded before integrity hashing was enabled)")
+        edf = edf.rename(columns={"sha256": "SHA-256 (integrity hash)"})
         st.dataframe(edf, width='stretch', hide_index=True)
         st.caption(
-            "Note: a real 'immutable evidence chain' would need per-file SHA-256 hashes computed at "
-            "upload time and stored alongside each record — not shown here since that isn't built yet."
+            "SHA-256 is computed from each stored file's actual bytes at upload time — a real, "
+            "per-file integrity hash (no longer a placeholder)."
         )

@@ -7,3 +7,4 @@ Pillow>=10.4
 pandas>=2.2
 plotly>=5.24
 python-dotenv>=1.0
+reportlab>=4.2

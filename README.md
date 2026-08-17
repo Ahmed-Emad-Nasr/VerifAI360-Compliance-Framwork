@@ -26,6 +26,11 @@ vulnerability scan report, etc.). The platform:
    scored on a standard 5×5 Likelihood × Impact matrix (1–25, bucketed into
    Low/Medium/High/Critical), with an owner, status, and mitigation plan you
    can track over time. See "Risk scoring & Identified Risks" below.
+6. **Exports a full PDF report**: one document with the executive summary,
+   per-requirement compliance scores, the gap report with remediation
+   steps, the identified-risks register, and the evidence log with
+   per-file SHA-256 integrity hashes. Download it from the Compliance
+   Dashboard page or the QSA Audit View page.
 
 ## Risk scoring & Identified Risks
 
@@ -53,15 +58,18 @@ engine:
 
 ## ⚠️ Pages marked "(demo)"
 
-Three sidebar pages — **Automated Connectors**, **Alerts & Drift**, and
-**QSA Audit View** — are UI mockups of planned features, clearly labeled as
-such in-app. Nothing on those pages reads real data: the "Connected"
-connector statuses, drift alerts, and the old "SHA-256 hash signature"
-column (which previously showed the *same* hash — the SHA-256 of an empty
-string — next to every file, which would have been actively misleading in
-an audit context) are all illustrative sample data. Treat them as a
-roadmap sketch, not working functionality, until they're actually wired up
-to real integrations, real diffing logic, and real per-file hashing.
+Two sidebar pages — **Automated Connectors** and **Alerts & Drift** — are UI
+mockups of planned features, clearly labeled as such in-app. Nothing on
+those pages reads real data: the "Connected" connector statuses and drift
+alerts are illustrative sample data. Treat them as a roadmap sketch, not
+working functionality, until they're actually wired up to real
+integrations and real diffing logic.
+
+**QSA Audit View** now shows real data end-to-end: the compliance %,
+per-file SHA-256 integrity hashes, and the "Generate audit PDF" button are
+all live and pulled from your actual database. What's still a roadmap
+sketch on that page is the rest of a full QSA workflow (reviewer sign-off,
+sampling notes, interview logs, a locked-down read-only auditor login).
 
 ## ⚠️ Important accuracy disclaimer (please read)
 
@@ -86,9 +94,10 @@ VerifAI360/
 ├── src/
 │   ├── database.py            # SQLite persistence (evidence, assessments, identified risks)
 │   ├── evidence_processor.py  # text/PDF/DOCX/OCR extraction
-│   ├── ai_analyzer.py         # Gemini API call + JSON schema validation
-│   ├── compliance_engine.py   # scoring aggregation + gap report
-│   └── risk_engine.py         # risk scoring (Likelihood x Impact) + identified risks
+│   ├── ai_analyzer.py         # Gemini API call + JSON schema validation + multi-key failover
+│   ├── compliance_engine.py   # scoring aggregation + gap report + SHA-256 integrity hashing
+│   ├── risk_engine.py         # risk scoring (Likelihood x Impact) + identified risks
+│   └── report_generator.py    # full PDF compliance report (reportlab)
 ├── evidence_store/            # uploaded files get copied here
 ├── requirements.txt
 └── .env.example
@@ -174,16 +183,23 @@ https://ai.google.dev/gemini-api/docs/pricing.
 | Gap identification | `compliance_engine.build_gap_report()` |
 | Continuous maturity scoring | `score_history` table + the trend chart on the Dashboard page; each new upload for a sub-requirement adds a new history point, and `_build_prior_context()` feeds prior evidence back into the next AI call so scoring is cumulative, not isolated |
 | Risk scoring + identified risks | `risk_engine.py` (Likelihood × Impact scoring) + `risk_register` table; Identified Risks page for sync-from-gaps, manual risks, ownership/status tracking, and CSV export |
+| Full PDF report + evidence integrity | `report_generator.generate_pdf_report()` renders the executive summary, per-requirement scores, gap report, risk register, and evidence log (with real per-file SHA-256 hashes computed in `compliance_engine._sha256_of_file()`) into one downloadable PDF |
 
 ## AI Security & API Security posture
 
 **Implemented:**
-- API key loaded from environment only, never hardcoded (`ai_analyzer._get_client()`).
+- API key loaded from environment only, never hardcoded (`ai_analyzer._get_client()`), with
+  automatic failover across multiple keys (`GOOGLE_API_KEY`, `GOOGLE_API_KEY_2`, ... or
+  `GOOGLE_API_KEYS="key1,key2"`) when one account's free-tier quota runs out.
 - `.gitignore` prevents committing a real `.env`, the local SQLite DB, or the evidence store.
 - Evidence file uploads: filenames are sanitized (`os.path.basename` + charset allowlist) before
   being used to build a filesystem path, with a second `os.path.commonpath` check as defense in
   depth — a malicious filename like `../../etc/passwd` cannot escape `evidence_store/`
   (`compliance_engine._safe_stored_filename`).
+- **Real per-file SHA-256 integrity hashing** (`compliance_engine._sha256_of_file`): computed from
+  the stored file's actual bytes at upload time, stored alongside the evidence record, and shown
+  in the Evidence Log, QSA Audit View, and the PDF report — so a hash can be used to verify a file
+  on disk hasn't been altered since it was submitted.
 - Upload size is capped both at the Streamlit server layer (`.streamlit/config.toml`,
   `maxUploadSize`) and in application code (`compliance_engine.MAX_EVIDENCE_FILE_BYTES`, 25 MB),
   to reduce resource-exhaustion risk from oversized files hitting OCR/PDF parsing.
@@ -229,5 +245,7 @@ Ideas to go further, if the team wants to extend scope:
   standard.
 - Add a re-scoring job that periodically re-checks evidence "freshness"
   (e.g. a scan report older than 90 days should decay in score).
-- Export a full PDF/Word compliance report (there's already a `pdf`/`docx`
-  authoring skill pattern to follow for that).
+- Add an audit log of every AI call (evidence id, timestamp, model, raw
+  response) for QSA-style accountability and score-manipulation detection.
+- Encrypt `verifai360.db` and `evidence_store/` at rest.
+- Validate uploaded files by content/magic bytes, not just extension.

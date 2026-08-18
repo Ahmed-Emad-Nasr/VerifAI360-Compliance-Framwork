@@ -4,10 +4,79 @@ Team members: Amr Mohamed El Sayed, Nazly Mohamed Samir, Youssef Ahmed Mohamed,
 Asmaa Ibrahim, Ahmed Emad El Din, Mohamed Hussein El Naggar, Mostafa Ahmed Mostafa.
 Mentor: Mostafa ElKady.
 
-## What this project does
+---
 
-You upload evidence (a policy document, a configuration screenshot, a
-vulnerability scan report, etc.). The platform:
+## 1. What this project is, in one paragraph
+
+PCI DSS is a security standard that any company handling credit-card data
+must follow. Proving you follow it usually means manually reading a long
+checklist and manually deciding, for every single item, "do we have proof
+of this, and is that proof good enough?" **VerifAI 360 automates that
+manual judgment call.** You upload a piece of evidence (a policy document,
+a firewall screenshot, a vulnerability scan report...), and an AI model
+reads it, decides which requirement(s) it actually proves, scores how
+convincing it is, and tells you what's missing. The app then turns all of
+those individual scores into one overall compliance percentage, a list of
+gaps, a risk register, and a downloadable PDF report.
+
+---
+
+## 2. Architecture — how the pieces fit together
+
+![VerifAI 360 architecture diagram](docs/architecture.png)
+
+**How to read this diagram, top to bottom:**
+
+1. **User (Browser)** — you open `http://localhost:8501` in a normal web
+   browser. There's no separate mobile app or desktop app.
+2. **`app.py` — Streamlit UI** — the only file that draws screens. It has
+   no business logic of its own; every page just asks the modules below it
+   for data and displays whatever comes back.
+3. **The four "core" modules** — each owns one job:
+   - `compliance_engine.py` runs the evidence pipeline and computes scores.
+   - `risk_engine.py` turns gaps into a scored risk register.
+   - `report_generator.py` renders the final PDF.
+   - `scoping_data.py` is just a lookup table (no logic) of which PCI DSS
+     requirements apply to which SAQ type.
+4. **The three "support" modules** — the actual heavy lifting:
+   - `evidence_processor.py` turns a file (PDF/DOCX/image) into plain text.
+   - `ai_analyzer.py` sends that text to Google's Gemini AI and gets a score back.
+   - `database.py` is the *only* file allowed to talk to the SQLite database.
+5. **External service** — `ai_analyzer.py` is the one place in the whole
+   app that makes a network call to something outside your own computer:
+   Google's Gemini API (free tier, no credit card required).
+6. **Storage, on your own disk** — three plain files/folders that hold all
+   persistent data: the SQLite database (`verifai360.db`), the folder of
+   uploaded files (`evidence_store/`), and the static requirement catalog
+   (`data/pci_dss_data.json`). Nothing is stored in the cloud unless you
+   choose to deploy the app somewhere yourself.
+
+**One evidence upload, start to finish:**
+
+```
+User picks a file on the "Upload & Analyze" page
+        │
+        ▼
+compliance_engine.process_uploaded_evidence()
+        │
+        ├─► evidence_processor.extract_text()   → turns the file into plain text
+        │
+        ├─► ai_analyzer.analyze_evidence()       → sends the text + requirement
+        │        │                                  catalog to Gemini, gets back
+        │        ▼                                  a JSON score for every
+        │   Google Gemini API                       relevant sub-requirement
+        │
+        └─► database.insert_evidence() / insert_assessment()
+                 → saves the file record + every score to verifai360.db
+        │
+        ▼
+Dashboard / Gap Report / Risk pages now reflect the new score automatically
+(they just re-read the database every time they're viewed)
+```
+
+---
+
+## 3. What the app actually does, step by step
 
 1. **Extracts** the text/content from the file (PDF, DOCX, image via OCR, or plain text).
 2. **Sends it to Gemini** (Google AI Studio's **free** API tier — no credit
@@ -32,7 +101,34 @@ vulnerability scan report, etc.). The platform:
    per-file SHA-256 integrity hashes. Download it from the Compliance
    Dashboard page or the QSA Audit View page.
 
-## Risk scoring & Identified Risks
+---
+
+## 4. File-by-file guide (plain English)
+
+| File | What it's for, in one sentence |
+|---|---|
+| `app.py` | The entire user interface — every screen you see is drawn from here. Contains almost no logic of its own. |
+| `src/database.py` | The only file that reads/writes the SQLite database. Every table has simple `insert_x()` / `update_x()` / `delete_x()` / `get_all_x()` functions. |
+| `src/evidence_processor.py` | Converts an uploaded file into plain text — reads PDFs/Word docs directly, and OCRs screenshots/scanned pages using Tesseract. |
+| `src/ai_analyzer.py` | Talks to the Google Gemini API. Builds the prompt, sends the evidence text, and validates the JSON that comes back. Includes retry logic and multi-key failover. |
+| `src/compliance_engine.py` | The "orchestrator": runs a full evidence upload end-to-end, and turns raw scores into the overall compliance percentage and the gap report. |
+| `src/risk_engine.py` | Turns a compliance gap into a Likelihood × Impact risk score, and manages the risk register. |
+| `src/scoping_data.py` | A static lookup table: for each SAQ type (A, B, C, D, ...), which of the 12 top-level PCI DSS requirements actually apply. |
+| `src/report_generator.py` | Builds the downloadable PDF report using the `reportlab` library — no browser or external renderer needed. |
+| `data/pci_dss_data.json` | The condensed PCI DSS requirement catalog the whole app is built around (see the accuracy disclaimer below). |
+| `verifai360.db` | The SQLite database file itself — created automatically the first time you run the app. |
+| `evidence_store/` | Every uploaded file gets copied here, renamed with a timestamp + sanitized filename. |
+| `config.toml` | Streamlit's native theme settings (dark mode, accent color) plus the server-side upload size cap. |
+
+Every source file under `src/` starts with a docstring explaining its
+purpose in more depth, and `app.py` has a short plain-English comment above
+each page section explaining what that screen does and which module
+actually computes its numbers — start there if you want to trace a
+specific feature back to its code.
+
+---
+
+## 5. Risk scoring & Identified Risks
 
 `src/risk_engine.py` adds a lightweight GRC layer on top of the compliance
 engine:
@@ -56,7 +152,9 @@ engine:
   Likelihood×Impact heatmap of currently open/mitigating risks.
 - Export the full list to CSV from the Identified Risks page.
 
-## ⚠️ Pages marked "(demo)"
+---
+
+## 6. ⚠️ Pages marked "(demo)"
 
 Two sidebar pages — **Automated Connectors** and **Alerts & Drift** — are UI
 mockups of planned features, clearly labeled as such in-app. Nothing on
@@ -71,7 +169,9 @@ all live and pulled from your actual database. What's still a roadmap
 sketch on that page is the rest of a full QSA workflow (reviewer sign-off,
 sampling notes, interview logs, a locked-down read-only auditor login).
 
-## ⚠️ Important accuracy disclaimer (please read)
+---
+
+## 7. ⚠️ Important accuracy disclaimer (please read)
 
 - `data/pci_dss_data.json` is an **original, condensed paraphrase** written for
   this student project. It is **not** a reproduction of the official PCI DSS
@@ -84,11 +184,15 @@ sampling notes, interview logs, a locked-down read-only auditor login).
 - Model output can be wrong. Treat every score/recommendation as a
   starting point to verify, not a final answer.
 
-## Project structure
+---
+
+## 8. Project structure
 
 ```
 VerifAI360/
-├── app.py                     # Streamlit UI (5 pages)
+├── app.py                     # Streamlit UI (11 workspace pages + 3 demo pages)
+├── docs/
+│   └── architecture.png       # the diagram at the top of this README
 ├── data/
 │   └── pci_dss_data.json      # condensed requirement catalog (see disclaimer)
 ├── src/
@@ -103,9 +207,11 @@ VerifAI360/
 └── .env.example
 ```
 
-## Design system
+---
 
-The app uses a custom dark theme (`.streamlit/config.toml` for the native
+## 9. Design system
+
+The app uses a custom dark theme (`config.toml` for the native
 Streamlit theme + injected CSS in `app.py` for cards, badges, and the
 page-header component) rather than default Streamlit styling. Key pieces
 if you're extending a page:
@@ -121,7 +227,9 @@ if you're extending a page:
   doesn't get silently deselected by an unrelated rerun (e.g. clicking a
   button elsewhere on that same demo page).
 
-## Setup
+---
+
+## 10. Setup
 
 ```bash
 # 1. Create a virtual environment (recommended)
@@ -166,15 +274,16 @@ more than a student project needs. The code uses the `-latest` alias
 rather than pinning a dated model name, since Google periodically retires
 older dated models (e.g. `gemini-2.5-flash` stopped accepting new users
 in mid-2026) — the alias automatically points at whichever Flash model is
-current.
-trade-off is that Google may use free-tier prompts/responses to improve
-their models (this does not apply to paid tiers), so avoid uploading real
-sensitive company data as "evidence" while testing — use sanitized or
-sample documents. Free-tier limits can change; if you start getting
-quota errors, check the current numbers at
+current. The trade-off is that Google may use free-tier prompts/responses
+to improve their models (this does not apply to paid tiers), so avoid
+uploading real sensitive company data as "evidence" while testing — use
+sanitized or sample documents. Free-tier limits can change; if you start
+getting quota errors, check the current numbers at
 https://ai.google.dev/gemini-api/docs/pricing.
 
-## How the "core objectives" map to code
+---
+
+## 11. How the "core objectives" map to code
 
 | Objective | Where it happens |
 |---|---|
@@ -185,7 +294,9 @@ https://ai.google.dev/gemini-api/docs/pricing.
 | Risk scoring + identified risks | `risk_engine.py` (Likelihood × Impact scoring) + `risk_register` table; Identified Risks page for sync-from-gaps, manual risks, ownership/status tracking, and CSV export |
 | Full PDF report + evidence integrity | `report_generator.generate_pdf_report()` renders the executive summary, per-requirement scores, gap report, risk register, and evidence log (with real per-file SHA-256 hashes computed in `compliance_engine._sha256_of_file()`) into one downloadable PDF |
 
-## AI Security & API Security posture
+---
+
+## 12. AI Security & API Security posture
 
 **Implemented:**
 - API key loaded from environment only, never hardcoded (`ai_analyzer._get_client()`), with
@@ -200,7 +311,7 @@ https://ai.google.dev/gemini-api/docs/pricing.
   the stored file's actual bytes at upload time, stored alongside the evidence record, and shown
   in the Evidence Log, QSA Audit View, and the PDF report — so a hash can be used to verify a file
   on disk hasn't been altered since it was submitted.
-- Upload size is capped both at the Streamlit server layer (`.streamlit/config.toml`,
+- Upload size is capped both at the Streamlit server layer (`config.toml`,
   `maxUploadSize`) and in application code (`compliance_engine.MAX_EVIDENCE_FILE_BYTES`, 25 MB),
   to reduce resource-exhaustion risk from oversized files hitting OCR/PDF parsing.
 - **Prompt injection hardening (OWASP LLM01):** evidence text is untrusted, user-supplied content.
@@ -234,7 +345,9 @@ https://ai.google.dev/gemini-api/docs/pricing.
    a production-facing deployment to avoid an unreviewed transitive update introducing a
    vulnerability.
 
-## Extending this for a real capstone submission
+---
+
+## 13. Extending this for a real capstone submission
 
 Ideas to go further, if the team wants to extend scope:
 - Swap the condensed JSON catalog for a licensed, complete copy of the

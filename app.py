@@ -1,5 +1,5 @@
 """
-VerifAI 360 — Streamlit application entry point.
+app.py — VerifAI 360 Streamlit application entry point (the whole UI lives here).
 
 Run with:
     streamlit run app.py
@@ -7,6 +7,35 @@ Run with:
 Requires GOOGLE_API_KEY to be set (see .env.example) for the
 "Upload & Analyze" page. All other pages work purely off the local
 SQLite database and need no API key.
+
+HOW THIS FILE IS ORGANIZED (read this first — it's ~1250 lines, but the shape is simple)
+------------------------------------------------------------------------------------------
+Streamlit re-runs this ENTIRE script from top to bottom every time the user
+clicks something. There is no separate "backend" process — this script IS
+the backend and the frontend at once. To keep that manageable, the file is
+split into three parts:
+
+  1. SETUP (top of the file): imports, theme/CSS, small reusable helper
+     functions like page_header(), and the sidebar navigation menu that
+     decides which page name is currently selected (the `page` variable).
+
+  2. PAGES (the big `if / elif` chain that makes up most of the file): each
+     `elif page == "...":` block is one screen of the app. Only ONE of
+     these blocks actually runs on any given script execution — Streamlit
+     "navigating" to a different page just means the user picked a
+     different sidebar option, so on the next re-run a different `elif`
+     branch executes instead. Each page block only talks to the `src/`
+     modules (database, compliance_engine, risk_engine, ai_analyzer,
+     report_generator, scoping_data) to get/save data — this file itself
+     contains almost no business logic, only "ask src/ for data, then
+     draw it with Streamlit widgets".
+
+  3. Nothing runs "at the end" in the traditional sense — whichever page
+     block matched `page` is the last code that executed for this run.
+
+If you're looking for where a specific number/calculation comes from,
+it is NOT computed in this file — search inside `src/` instead (this file
+only displays what `src/` returns).
 """
 
 import os
@@ -306,6 +335,14 @@ def requirement_id_for_sub(sub_id):
 
 # ----------------------------------------------------------------------------
 # PAGE: Upload & Analyze
+#
+# Plain-English summary: this is the "front door" of the app. The user picks
+# a file (a policy doc, a screenshot, a scan report...) and, optionally, the
+# specific PCI DSS sub-requirement it's meant to prove. Clicking "Analyze"
+# saves the file to disk, sends its text to the AI (see src/ai_analyzer.py),
+# and shows the AI's opinion: a 0-100 score, a maturity label, gaps, and
+# recommendations. Everything the AI returns gets saved to the database by
+# src/compliance_engine.process_uploaded_evidence().
 # ----------------------------------------------------------------------------
 if page == "Upload & Analyze":
     page_header("📤", "Upload evidence for AI assessment",
@@ -388,6 +425,13 @@ if page == "Upload & Analyze":
 
 # ----------------------------------------------------------------------------
 # PAGE: Compliance Dashboard
+#
+# Plain-English summary: the "big picture" page. It calls
+# compliance_engine.compute_compliance_summary() to turn every stored score
+# into one overall percentage, a percentage per top-level requirement
+# (1-12), and charts (bar chart per requirement, trend line of scores over
+# time, risk heatmap). Nothing is computed here — this page only asks the
+# compliance_engine / risk_engine for numbers and draws them with Plotly.
 # ----------------------------------------------------------------------------
 elif page == "Compliance Dashboard":
     page_header("📊", "Compliance Dashboard", "Overall PCI DSS posture, scoped to your selected SAQ type")
@@ -550,10 +594,22 @@ elif page == "Compliance Dashboard":
         )
 
 # ----------------------------------------------------------------------------
-# PAGE: Identified Risks
+# NOTE: "Identified Risks" is rendered as a section further up inside the
+# Compliance Dashboard block above (it shares that page's sidebar entry),
+# not as its own separate "elif" branch — that's why there's no
+# `elif page == "Identified Risks":` here.
 # ----------------------------------------------------------------------------
+
 # ----------------------------------------------------------------------------
 # PAGE: SAQ Type Selection & Scoping
+#
+# Plain-English summary: usually the FIRST page a new user should visit.
+# The user tells the app which SAQ type applies to them (see
+# src/scoping_data.py for what each type means), and the app remembers that
+# choice (db.set_setting). Every other page then uses that choice to decide
+# which of the 12 top-level requirements are actually "in scope" — so the
+# headline compliance % only reflects what the user's business actually
+# needs to satisfy.
 # ----------------------------------------------------------------------------
 elif page == "SAQ Scoping":
     page_header("🎯", "SAQ Type Selection & Scoping",
@@ -602,6 +658,12 @@ elif page == "SAQ Scoping":
 
 # ----------------------------------------------------------------------------
 # PAGE: CDE Scope Definition
+#
+# Plain-English summary: a simple form + table (backed by the cde_scope
+# table in database.py) where the user lists every system that is inside,
+# or connected to, the Cardholder Data Environment (CDE) — the part of the
+# network that actually touches card data. This is bookkeeping only: no AI
+# or scoring is involved, it just records what the user tells it.
 # ----------------------------------------------------------------------------
 elif page == "CDE Scope":
     page_header("🗺️", "Cardholder Data Environment (CDE) Scope",
@@ -678,6 +740,13 @@ elif page == "CDE Scope":
 
 # ----------------------------------------------------------------------------
 # PAGE: Compensating Controls Worksheet
+#
+# Plain-English summary: sometimes a company can't implement a control
+# exactly as PCI DSS describes it, so they document an equivalent
+# "compensating control" instead. This page is a structured form (backed by
+# the compensating_controls table) for writing that justification down:
+# why the standard control doesn't fit, what alternative meets the same
+# goal, and who signed off on it. Again, pure record-keeping — no AI here.
 # ----------------------------------------------------------------------------
 elif page == "Compensating Controls":
     page_header("🛡️", "Compensating Controls Worksheet",
@@ -756,6 +825,13 @@ elif page == "Compensating Controls":
 
 # ----------------------------------------------------------------------------
 # PAGE: Recurring Testing Tracker (Requirement 11)
+#
+# Plain-English summary: PCI DSS Requirement 11 requires things like
+# vulnerability scans and penetration tests on a recurring schedule
+# (quarterly, annual, etc.), not just once. This page lets the user log
+# each test and its result, and automatically works out (via
+# compliance_engine.suggest_next_due_date / testing_tracker_status) whether
+# the next one is "On track", "Due soon", or "Overdue".
 # ----------------------------------------------------------------------------
 elif page == "Testing Tracker (Req 11)":
     page_header("🧪", "Recurring Testing Tracker",
@@ -861,6 +937,12 @@ elif page == "Testing Tracker (Req 11)":
 
 # ----------------------------------------------------------------------------
 # PAGE: Vendor / TPSP Management Register
+#
+# Plain-English summary: a simple CRM-style table (backed by the
+# vendor_register table) for tracking every third-party service provider
+# (TPSP) that touches the cardholder data environment: what they do, how
+# they connect, and whether their own PCI DSS attestation (AOC/SAQ/ROC) is
+# current. No AI or scoring involved — just structured record-keeping.
 # ----------------------------------------------------------------------------
 elif page == "Vendor / TPSP Register":
     page_header("🤝", "Vendor / TPSP Management Register",
@@ -1077,6 +1159,13 @@ elif page == "Identified Risks":
 
 # ----------------------------------------------------------------------------
 # PAGE: Gap Report
+#
+# Plain-English summary: shows exactly which sub-requirements are still
+# below the "compliant" score threshold, sorted worst-first, with the
+# specific gaps and recommendations the AI (or the default message, if no
+# evidence exists yet) attached to each one. All the data comes straight
+# from compliance_engine.build_gap_report() — this page just displays it
+# and offers a "sync these gaps into the Identified Risks register" button.
 # ----------------------------------------------------------------------------
 elif page == "Gap Report":
     page_header("🕳️", "Gap Report & Remediation Plan",
@@ -1110,6 +1199,12 @@ elif page == "Gap Report":
 
 # ----------------------------------------------------------------------------
 # PAGE: Requirement Explorer
+#
+# Plain-English summary: a read-only, browsable view of the entire PCI DSS
+# catalog loaded from data/pci_dss_data.json, with the current score/status
+# for each sub-requirement shown next to it. Useful for understanding what
+# a requirement actually asks for, independent of the dashboard's summary
+# numbers.
 # ----------------------------------------------------------------------------
 elif page == "Requirement Explorer":
     page_header("📚", "PCI DSS Requirement Explorer", "Browse the full catalog and current evidence status")
@@ -1134,6 +1229,11 @@ elif page == "Requirement Explorer":
 
 # ----------------------------------------------------------------------------
 # PAGE: Evidence Log
+#
+# Plain-English summary: a simple chronological table of every file ever
+# uploaded (from the evidence table), including its SHA-256 hash — a
+# fingerprint that changes if the file's bytes ever change, so it can be
+# used later to prove a stored file hasn't been tampered with.
 # ----------------------------------------------------------------------------
 elif page == "Evidence Log":
     page_header("🗂️", "Evidence Log", "Every artifact submitted so far, in one place")
@@ -1154,6 +1254,12 @@ elif page == "Evidence Log":
 
 # ----------------------------------------------------------------------------
 # PAGE: Automated Connectors (demo / roadmap mockup)
+#
+# Plain-English summary: NOT a real feature yet. This page only shows what
+# it would look like to auto-pull evidence from tools like AWS Config or a
+# vulnerability scanner, using hardcoded sample data. It's a mockup for
+# planning future work, clearly labeled with demo_banner() so it's never
+# mistaken for live functionality.
 # ----------------------------------------------------------------------------
 elif page == "Automated Connectors (demo)":
     page_header("🔌", "Automated Evidence Ingestion", "Roadmap concept — not a live integration")
@@ -1190,6 +1296,11 @@ elif page == "Automated Connectors (demo)":
 
 # ----------------------------------------------------------------------------
 # PAGE: Alerts & Drift (demo / roadmap mockup)
+#
+# Plain-English summary: also NOT a real feature yet — a mockup of what
+# alerts would look like if the app could detect that a previously-compliant
+# control had "drifted" out of compliance (e.g. a firewall rule changed).
+# Uses sample/illustrative data only.
 # ----------------------------------------------------------------------------
 elif page == "Alerts & Drift (demo)":
     page_header("📡", "Compliance Drift Alerts", "Roadmap concept — not a live integration")
@@ -1215,6 +1326,11 @@ elif page == "Alerts & Drift (demo)":
 
 # ----------------------------------------------------------------------------
 # PAGE: QSA Audit View (demo / roadmap mockup)
+#
+# Plain-English summary: mostly REAL, partly mockup. The compliance %,
+# per-file SHA-256 hashes, and the "Generate audit PDF" button are wired to
+# real data. What's still a mockup is the rest of a full auditor workflow
+# (reviewer sign-off, sampling notes, a separate read-only auditor login).
 # ----------------------------------------------------------------------------
 elif page == "QSA Audit View (demo)":
     page_header("🧾", "QSA Audit View", "Roadmap concept — not a live integration")

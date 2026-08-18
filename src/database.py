@@ -3,15 +3,48 @@ database.py
 ------------
 Lightweight SQLite persistence layer for VerifAI 360.
 
+In plain English: this is the ONLY file that talks directly to the
+database. Every other file (app.py, compliance_engine.py, risk_engine.py,
+report_generator.py) reads/writes data by calling functions in this file —
+they never write raw SQL themselves. This keeps all the table/column
+knowledge in one place.
+
+The database itself is a single file, `verifai360.db`, in the project's
+root folder — SQLite needs no separate server, it's just a file that
+Python's built-in `sqlite3` module reads and writes directly.
+
 Tables
 ------
-evidence            : one row per uploaded evidence file
-sub_req_assessment  : one row per (evidence, sub-requirement) AI assessment
-                       -> this is what enables "cross-requirement spanning":
-                          a single evidence file can create MANY rows here.
-score_history        : one row per sub-requirement every time its score is
-                       recomputed -> enables the "continuous maturity
-                       scoring" trend line in the dashboard.
+evidence              : one row per uploaded evidence file
+sub_req_assessment    : one row per (evidence, sub-requirement) AI assessment
+                         -> this is what enables "cross-requirement spanning":
+                            a single evidence file can create MANY rows here.
+score_history          : one row per sub-requirement every time its score is
+                         recomputed -> enables the "continuous maturity
+                         scoring" trend line in the dashboard.
+risk_register          : one row per risk (auto-generated from a gap, or
+                         entered manually) — powers the Identified Risks page.
+app_settings            : simple key/value store (e.g. which SAQ type is
+                         currently selected) — not a "real" settings system,
+                         just a two-column table (key, value).
+cde_scope               : one row per system the user has documented as
+                         inside/connected to the Cardholder Data Environment.
+compensating_controls  : one row per compensating-control justification.
+testing_tracker         : one row per recurring test (scan, pen test, ...).
+vendor_register         : one row per third-party vendor/service provider.
+
+REPEATING PATTERN — READ THIS ONCE, THEN SKIM THE REST
+--------------------------------------------------------
+Most of the tables above (risk_register, cde_scope, compensating_controls,
+testing_tracker, vendor_register) follow the exact same four-function
+pattern: `insert_x(...)`, `update_x(item_id, **fields)`, `delete_x(item_id)`,
+`get_all_x()`. Once you understand one group (e.g. "CDE scope" below),
+you already understand the others — they just point at a different table.
+`update_x(item_id, **fields)` is intentionally generic: pass only the
+columns you want to change as keyword arguments (e.g.
+`update_risk(5, status="Closed")`) and it builds the `UPDATE ... SET`
+statement for you, so each table doesn't need one hand-written "update"
+function per column.
 """
 
 import sqlite3
@@ -288,6 +321,9 @@ def get_latest_assessment_per_subreq():
 
 # ---------------------------------------------------------------------------
 # Risk register
+# (insert / update / delete / get_all — see the "REPEATING PATTERN" note
+#  in the module docstring above if this is the first CRUD group you're
+#  reading)
 # ---------------------------------------------------------------------------
 
 def insert_risk(requirement_id, sub_requirement_id, title, description, likelihood, impact,
@@ -383,7 +419,9 @@ def set_settings_json(key, value):
 
 
 # ---------------------------------------------------------------------------
-# CDE scope
+# CDE scope (one row per system inside/connected to the Cardholder Data
+# Environment — pure record-keeping, same insert/update/delete/get_all
+# CRUD pattern as "Risk register" above)
 # ---------------------------------------------------------------------------
 
 def insert_cde_system(system_name, component_type, description, in_scope, connected_to_cde,
@@ -422,7 +460,7 @@ def get_all_cde_systems():
 
 
 # ---------------------------------------------------------------------------
-# Compensating controls
+# Compensating controls (same CRUD pattern as above, different table)
 # ---------------------------------------------------------------------------
 
 def insert_compensating_control(sub_requirement_id, original_requirement_text, constraint_reason,
@@ -468,7 +506,8 @@ def get_all_compensating_controls():
 
 
 # ---------------------------------------------------------------------------
-# Recurring testing tracker (Requirement 11: ASV scans, pen tests, segmentation tests, ...)
+# Recurring testing tracker (Requirement 11: ASV scans, pen tests, segmentation
+# tests, ...) — same CRUD pattern as above, different table
 # ---------------------------------------------------------------------------
 
 def insert_test_item(test_type, related_requirement, scope_description, frequency,
@@ -509,7 +548,8 @@ def get_all_test_items():
 
 
 # ---------------------------------------------------------------------------
-# Vendor / TPSP (third-party service provider) register
+# Vendor / TPSP (third-party service provider) register — same CRUD pattern
+# as above, different table
 # ---------------------------------------------------------------------------
 
 def insert_vendor(vendor_name, service_provided, pci_dss_responsibility, cde_connection,

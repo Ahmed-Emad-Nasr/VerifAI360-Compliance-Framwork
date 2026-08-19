@@ -94,6 +94,7 @@ def init_db():
                 rationale TEXT,
                 gaps TEXT,                                -- JSON list of strings
                 recommendations TEXT,                     -- JSON list of strings
+                analysis_source TEXT NOT NULL DEFAULT 'ai',  -- 'ai' (Gemini) or 'local' (offline keyword match)
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (evidence_id) REFERENCES evidence(id) ON DELETE CASCADE
             );
@@ -209,6 +210,12 @@ def _migrate_add_missing_columns(conn):
         conn.execute("ALTER TABLE evidence ADD COLUMN sha256 TEXT")
         _backfill_sha256(conn)
 
+    assess_cols = {r["name"] for r in conn.execute("PRAGMA table_info(sub_req_assessment)").fetchall()}
+    if "analysis_source" not in assess_cols:
+        # Existing rows all predate the local (offline) engine, so they were
+        # necessarily produced by the AI engine — backfill accordingly.
+        conn.execute("ALTER TABLE sub_req_assessment ADD COLUMN analysis_source TEXT NOT NULL DEFAULT 'ai'")
+
 
 def _backfill_sha256(conn):
     """One-time backfill: compute real SHA-256 hashes for evidence rows uploaded before this
@@ -241,16 +248,16 @@ def insert_evidence(filename, stored_path, evidence_type, target_sub_requirement
 
 
 def insert_assessment(evidence_id, sub_requirement_id, is_primary_target, sufficiency_score,
-                       maturity_level, rationale, gaps, recommendations):
+                       maturity_level, rationale, gaps, recommendations, analysis_source="ai"):
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO sub_req_assessment
                (evidence_id, sub_requirement_id, is_primary_target, sufficiency_score,
-                maturity_level, rationale, gaps, recommendations, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                maturity_level, rationale, gaps, recommendations, analysis_source, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (evidence_id, sub_requirement_id, int(is_primary_target), sufficiency_score,
              maturity_level, rationale, json.dumps(gaps or []), json.dumps(recommendations or []),
-             datetime.datetime.utcnow().isoformat()),
+             analysis_source, datetime.datetime.utcnow().isoformat()),
         )
         conn.execute(
             """INSERT INTO score_history (sub_requirement_id, score, recorded_at)
@@ -288,7 +295,15 @@ def get_assessments_for_subreq(sub_requirement_id):
 
 def get_all_evidence():
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM evidence ORDER BY uploaded_at DESC").fetchall()
+        rows = conn.execute(
+            """
+            SELECT e.*,
+                   (SELECT sra.analysis_source FROM sub_req_assessment sra
+                    WHERE sra.evidence_id = e.id LIMIT 1) AS analysis_source
+            FROM evidence e
+            ORDER BY e.uploaded_at DESC
+            """
+        ).fetchall()
         return [dict(r) for r in rows]
 
 

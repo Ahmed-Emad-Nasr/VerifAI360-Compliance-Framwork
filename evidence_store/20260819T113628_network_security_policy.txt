@@ -1,0 +1,7 @@
+
+Network Security Policy
+This document defines our firewall policy and roles and responsibilities for managing
+network security controls. It includes a current network diagram and data flow diagram
+showing how the CDE (cardholder data environment) is segmented from the rest of the
+corporate network via a DMZ. Firewall rule review is performed quarterly, and all ACL
+changes are logged. Anti-spoofing measures are enabled on all border routers.

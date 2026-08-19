@@ -23,6 +23,7 @@ import datetime
 from . import database as db
 from . import evidence_processor as ep
 from . import ai_analyzer as ai
+from . import local_analyzer as la
 from . import scoping_data as sd
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -74,7 +75,11 @@ def all_sub_requirements(pci_data: dict):
             yield req, sub
 
 
-def process_uploaded_evidence(source_filepath: str, original_filename: str, target_sub_requirement: str = None):
+ANALYSIS_ENGINES = {"ai": "AI-powered (Gemini)", "local": "Local rule-based (offline)"}
+
+
+def process_uploaded_evidence(source_filepath: str, original_filename: str, target_sub_requirement: str = None,
+                               analysis_mode: str = "ai"):
     """
     Full pipeline for one evidence upload:
       1. Copy file into evidence_store/
@@ -82,12 +87,19 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
       3. Build 'prior context' string from previously-submitted evidence
          near the target sub-requirement (helps the AI reason about
          cumulative maturity, not just this one file in isolation)
-      4. Call the AI analyzer
-      5. Persist evidence + every returned assessment (this is where
-         cross-requirement spanning actually gets recorded)
+      4. Call the analysis engine — either the AI analyzer (ai_analyzer.py,
+         calls Gemini) or the local analyzer (local_analyzer.py, offline
+         keyword matching against data/pci_dss_data.json), selected via
+         `analysis_mode` ("ai" or "local"). Both return the same schema.
+      5. Persist evidence + every returned assessment, tagged with which
+         engine produced it (this is where cross-requirement spanning
+         actually gets recorded)
 
-    Returns the parsed AI response dict.
+    Returns the parsed analyzer response dict, plus 'analysis_mode'.
     """
+    if analysis_mode not in ANALYSIS_ENGINES:
+        raise ValueError(f"Unknown analysis_mode: {analysis_mode!r}. Expected one of {list(ANALYSIS_ENGINES)}.")
+
     os.makedirs(EVIDENCE_STORE, exist_ok=True)
 
     file_size = os.path.getsize(source_filepath)
@@ -115,12 +127,21 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
     pci_data = load_pci_data()
     prior_context = _build_prior_context(target_sub_requirement)
 
-    result = ai.analyze_evidence(
-        evidence_text=text,
-        pci_data=pci_data,
-        target_sub_requirement=target_sub_requirement,
-        prior_context=prior_context,
-    )
+    if analysis_mode == "local":
+        result = la.analyze_evidence(
+            evidence_text=text,
+            pci_data=pci_data,
+            target_sub_requirement=target_sub_requirement,
+            prior_context=prior_context,
+            filename=original_filename,
+        )
+    else:
+        result = ai.analyze_evidence(
+            evidence_text=text,
+            pci_data=pci_data,
+            target_sub_requirement=target_sub_requirement,
+            prior_context=prior_context,
+        )
 
     evidence_id = db.insert_evidence(
         filename=original_filename,
@@ -141,10 +162,12 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
             rationale=a["rationale"],
             gaps=a["gaps"],
             recommendations=a["recommendations"],
+            analysis_source=analysis_mode,
         )
 
     result["evidence_id"] = evidence_id
     result["evidence_type"] = evidence_type
+    result["analysis_mode"] = analysis_mode
     return result
 
 

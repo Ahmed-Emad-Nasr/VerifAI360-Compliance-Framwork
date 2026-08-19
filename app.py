@@ -56,6 +56,7 @@ from src import report_generator as rg
 from src import ai_analyzer as ai
 from src import scoping_data as sd
 from src.ai_analyzer import AIAnalyzerError
+from src.local_analyzer import LocalAnalyzerError
 from src.evidence_processor import EvidenceExtractionError
 from src.compliance_engine import EvidenceUploadError
 
@@ -461,10 +462,16 @@ if page == "Upload & Analyze":
                     "**This is the front door of the app.** You upload one artifact — a policy doc, "
                     "a config screenshot, a scan report, anything — and optionally tell it which PCI DSS "
                     "sub-requirement it's meant to prove.\n\n"
-                    "**What happens when you click Analyze:** the file is saved, its text/content is sent "
-                    "to Google Gemini for review, and the AI hands back a 0–100 sufficiency score, a "
-                    "maturity label, any gaps it sees, and concrete recommendations — sometimes mapping "
-                    "one file to *several* sub-requirements at once.\n\n"
+                    "**Two analysis engines, your choice:** the **AI engine** sends the extracted text "
+                    "to Google Gemini for a semantic read — best accuracy, needs an API key and network "
+                    "access. The **Local engine** scores it against four fully offline signals mined "
+                    "from `data/pci_dss_data.json` and the filename itself — curated evidence keywords, "
+                    "the sub-requirement's title/summary vocabulary, its example-evidence vocabulary, "
+                    "and a small filename cross-check — free, deterministic, and nothing leaves your "
+                    "machine, at the cost of not understanding paraphrased or novel wording the way an "
+                    "LLM can.\n\n"
+                    "**Either way you get:** a 0–100 sufficiency score, a maturity label, gaps, and "
+                    "recommendations — sometimes mapping one file to *several* sub-requirements at once.\n\n"
                     "**Why it exists:** manually cross-checking each piece of evidence against 12 "
                     "requirements and dozens of sub-requirements is the slowest part of a real PCI DSS "
                     "self-assessment. This page automates that first read so a human only needs to "
@@ -472,9 +479,34 @@ if page == "Upload & Analyze":
                 ))
     st.write(
         "Upload a policy document, configuration screenshot, scan report, or similar artifact. "
-        "The AI will assess its **sufficiency**, assign a **compliance/maturity score**, check whether "
-        "it also **spans other sub-requirements**, and generate **gap-remediation recommendations**."
+        "The selected engine will assess its **sufficiency**, assign a **compliance/maturity score**, "
+        "check whether it also **spans other sub-requirements**, and generate **gap-remediation "
+        "recommendations**."
     )
+
+    n_keys = ai.get_key_count()
+    engine_choice = st.radio(
+        "Analysis engine",
+        ["🤖 AI-powered (Gemini)", "🧩 Local rule-based (offline, no API needed)"],
+        horizontal=True,
+        index=0 if n_keys > 0 else 1,
+        help=(
+            "AI engine: deeper, context-aware read via Google Gemini — needs GOOGLE_API_KEY and "
+            "network access. Local engine: instant, offline keyword-coverage scoring against the "
+            "bundled PCI DSS catalog — no API key, no network call, no data leaves this machine."
+        ),
+    )
+    analysis_mode = "local" if engine_choice.startswith("🧩") else "ai"
+    if analysis_mode == "ai" and n_keys == 0:
+        st.warning(
+            "No Gemini API key detected — the AI engine will fail. Switch to **Local rule-based** "
+            "above, or add `GOOGLE_API_KEY` to your `.env` file."
+        )
+    elif analysis_mode == "local":
+        st.caption(
+            "🧩 Local engine selected — scoring is keyword-coverage based (transparent, but less "
+            "nuanced than the AI read). Good for a fast first pass or when working offline."
+        )
 
     opts, id_map = sub_req_options()
     col1, col2 = st.columns([2, 1])
@@ -489,14 +521,20 @@ if page == "Upload & Analyze":
         target_id = id_map.get(target_label)
 
     if uploaded and st.button("🔍 Analyze evidence", type="primary"):
-        with st.spinner("Extracting evidence and running AI compliance analysis..."):
+        spinner_text = (
+            "Extracting evidence and running AI compliance analysis..."
+            if analysis_mode == "ai" else
+            "Extracting evidence and running local keyword-coverage analysis..."
+        )
+        with st.spinner(spinner_text):
             try:
                 suffix = os.path.splitext(uploaded.name)[1]
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     tmp.write(uploaded.getbuffer())
                     tmp_path = tmp.name
 
-                result = ce.process_uploaded_evidence(tmp_path, uploaded.name, target_id)
+                result = ce.process_uploaded_evidence(tmp_path, uploaded.name, target_id,
+                                                        analysis_mode=analysis_mode)
                 os.unlink(tmp_path)
             except EvidenceUploadError as e:
                 st.error(f"Upload rejected: {e}")
@@ -507,13 +545,20 @@ if page == "Upload & Analyze":
             except AIAnalyzerError as e:
                 st.error(f"AI analysis failed: {e}")
                 st.stop()
+            except LocalAnalyzerError as e:
+                st.error(f"Local analysis failed: {e}")
+                st.stop()
 
-        st.success(f"Analysis complete — evidence recognized as: **{result['evidence_type']}**")
+        engine_label = ce.ANALYSIS_ENGINES.get(result.get("analysis_mode"), "")
+        st.success(
+            f"Analysis complete via **{engine_label}** — evidence recognized as: "
+            f"**{result['evidence_type']}**"
+        )
         st.info(result.get("evidence_summary", ""))
 
         assessments = sorted(result["assessments"], key=lambda a: -a["sufficiency_score"])
         if not assessments:
-            st.warning("The AI did not find this evidence relevant to any PCI DSS sub-requirement in the catalog.")
+            st.warning("No relevant PCI DSS sub-requirement was found for this evidence in the catalog.")
         else:
             st.subheader(f"Mapped to {len(assessments)} sub-requirement(s)")
             if len(assessments) > 1:
@@ -1441,7 +1486,8 @@ elif page == "Evidence Log":
                 about=(
                     "**A chronological table of every file ever uploaded**, pulled straight from the "
                     "`evidence` table, including each file's **SHA-256 hash** — a fingerprint that "
-                    "changes the instant the file's bytes change.\n\n"
+                    "changes the instant the file's bytes change — and which **analysis engine** "
+                    "(AI or Local) scored it.\n\n"
                     "**Why the hash matters:** it lets you (or an auditor) later prove a stored piece "
                     "of evidence hasn't been silently swapped or edited since it was submitted — the "
                     "same integrity-verification idea used in digital forensics chain-of-custody."
@@ -1451,14 +1497,20 @@ elif page == "Evidence Log":
         st.info("No evidence submitted yet.")
     else:
         edf = pd.DataFrame(evidence)[
-            ["id", "filename", "evidence_type", "target_sub_requirement", "uploaded_at", "sha256"]
+            ["id", "filename", "evidence_type", "target_sub_requirement", "uploaded_at",
+             "analysis_source", "sha256"]
         ]
         edf["sha256"] = edf["sha256"].fillna("— (uploaded before integrity hashing was enabled)")
-        edf = edf.rename(columns={"sha256": "SHA-256 (integrity hash)"})
+        edf["analysis_source"] = edf["analysis_source"].map(
+            {"ai": "🤖 AI (Gemini)", "local": "🧩 Local (offline)"}
+        ).fillna("—")
+        edf = edf.rename(columns={"sha256": "SHA-256 (integrity hash)", "analysis_source": "Engine"})
         st.dataframe(edf, width='stretch', hide_index=True)
         st.caption(
             "SHA-256 is computed from the stored file's actual bytes at upload time — a real "
-            "integrity hash you can use to verify a file on disk hasn't been altered since."
+            "integrity hash you can use to verify a file on disk hasn't been altered since. "
+            "**Engine** shows whether that file's score came from the AI (Gemini) or the Local "
+            "(offline keyword-matching) analysis engine."
         )
 
 # ----------------------------------------------------------------------------

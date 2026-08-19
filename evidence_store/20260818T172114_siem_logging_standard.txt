@@ -1,0 +1,40 @@
+LOGGING AND MONITORING STANDARD — SIEM INTEGRATION
+Owner: SOC / Detection Engineering
+Version: 2.1
+
+1. SCOPE OF LOG COLLECTION
+All in-scope CDE systems forward the following event types to the
+central SIEM (Splunk Enterprise Security) via a hardened forwarder:
+- Authentication events (success and failure), including privileged
+  account use and elevation (sudo/su, admin console logins).
+- Access to cardholder data (application-layer audit logs from the
+  payment processing service).
+- Changes to identification and authentication mechanisms (account
+  creation/deletion, privilege changes).
+- Initialization, stopping, or pausing of audit logs.
+- Creation and deletion of system-level objects on CDE hosts.
+
+2. LOG INTEGRITY
+- Forwarders write logs over TLS to the SIEM ingest tier; local log
+  files on CDE hosts are set to append-only and access is restricted to
+  the logging service account and SOC administrators only.
+- File Integrity Monitoring (FIM) is enabled on all local log paths;
+  any unauthorized modification triggers a Sev-2 SOC alert
+  (detection rule: FIM-LOG-TAMPER-01).
+
+3. RETENTION
+- Hot/searchable retention in Splunk: 12 months.
+- Cold storage (S3 Glacier, encrypted): additional 3 months, meeting the
+  minimum combined 15-month... [DOCUMENT TRUNCATED — retention section
+  incomplete, needs to be finished and confirmed against the 12-month
+  minimum + at least 3 months immediately available requirement before
+  this is submitted as final evidence]
+
+4. REVIEW CADENCE
+- Automated correlation rules and SOC Tier-1 review: continuous
+  (24/7 SOC coverage).
+- Formal log review of critical system components: daily, per SOC
+  shift handover checklist.
+- Review of logs for all other system components: currently ad hoc,
+  not yet on a defined schedule — identified as an internal
+  improvement item for Q4 2026.

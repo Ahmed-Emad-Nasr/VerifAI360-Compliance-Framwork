@@ -35,7 +35,6 @@ actionable install message.
 """
 
 import os
-import platform
 import shutil
 import sys
 

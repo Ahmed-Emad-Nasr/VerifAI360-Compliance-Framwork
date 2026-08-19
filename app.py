@@ -68,121 +68,223 @@ db.init_db()
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
     :root {
-        --vf-bg: #0b1018;
-        --vf-bg-alt: #0e1420;
-        --vf-panel: #141c2b;
-        --vf-panel-raised: #182337;
-        --vf-border: #263049;
-        --vf-border-soft: #1d2740;
+        --vf-bg: #060a10;
+        --vf-bg-alt: #0a0f18;
+        --vf-panel: #0e1626;
+        --vf-panel-raised: #121d31;
+        --vf-border: #1f2c45;
+        --vf-border-soft: #172239;
         --vf-accent: #35d0c0;
+        --vf-accent-2: #7cf0ff;
         --vf-accent-soft: rgba(53,208,192,0.12);
         --vf-accent-dim: #1f8a80;
         --vf-text: #e7ecf5;
-        --vf-muted: #8fa0bd;
-        --vf-red: #e5484d;
+        --vf-muted: #7d8db0;
+        --vf-red: #ff4d5e;
         --vf-amber: #e0a72e;
         --vf-green: #3ecf8e;
+        --vf-mono: 'JetBrains Mono', 'Consolas', monospace;
     }
 
-    html, body, .stApp { background: var(--vf-bg); color: var(--vf-text); font-family: 'Inter', sans-serif; }
+    /* ---- Base cyber-SOC background: subtle grid + vignette + scanline ---- */
+    html, body, .stApp {
+        background-color: var(--vf-bg);
+        background-image:
+            linear-gradient(rgba(53,208,192,0.045) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(53,208,192,0.045) 1px, transparent 1px),
+            radial-gradient(ellipse 80% 60% at 50% -10%, rgba(53,208,192,0.08), transparent 60%);
+        background-size: 42px 42px, 42px 42px, 100% 100%;
+        color: var(--vf-text);
+        font-family: 'Inter', sans-serif;
+    }
+    .stApp::before {
+        content: "";
+        position: fixed; inset: 0; pointer-events: none; z-index: 9999;
+        background: repeating-linear-gradient(
+            to bottom, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px,
+            transparent 1px, transparent 3px
+        );
+        mix-blend-mode: overlay;
+    }
     h1, h2, h3, h4 { font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.2px; }
     p, span, div, label { font-family: 'Inter', sans-serif; }
+    code, .stCodeBlock, [data-testid="stMetricValue"], .vf-mono { font-family: var(--vf-mono) !important; }
 
     /* remove default streamlit top padding for a tighter, more app-like feel */
     .block-container { padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1200px; }
 
+    /* thin animated accent line across the very top of the app, HUD-style */
+    div[data-testid="stAppViewContainer"] > div:first-child::before {
+        content: ""; display: block; height: 2px; width: 100%;
+        background: linear-gradient(90deg, transparent, var(--vf-accent), var(--vf-accent-2), var(--vf-accent), transparent);
+        background-size: 200% 100%;
+        animation: vf-scan-x 5s linear infinite;
+        opacity: 0.55;
+    }
+    @keyframes vf-scan-x { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
     section[data-testid="stSidebar"] {
         background: linear-gradient(180deg, var(--vf-panel) 0%, var(--vf-bg-alt) 100%);
         border-right: 1px solid var(--vf-border);
+        box-shadow: 4px 0 24px rgba(0,0,0,0.35);
     }
     section[data-testid="stSidebar"] .block-container { padding-top: 1.2rem; }
 
     /* ---- Page header component (see page_header() helper) ---- */
     .vf-page-header {
         display: flex; align-items: center; gap: 14px;
-        padding-bottom: 6px; margin-bottom: 4px;
+        padding-bottom: 10px; margin-bottom: 4px;
         border-bottom: 1px solid var(--vf-border-soft);
+        position: relative;
+    }
+    .vf-page-header::after {
+        content: ""; position: absolute; left: 0; bottom: -1px; height: 1px; width: 120px;
+        background: linear-gradient(90deg, var(--vf-accent), transparent);
+        box-shadow: 0 0 8px 1px rgba(53,208,192,0.6);
     }
     .vf-page-header .vf-icon {
         font-size: 1.7rem; width: 46px; height: 46px; min-width: 46px;
         display: flex; align-items: center; justify-content: center;
-        background: var(--vf-accent-soft); border: 1px solid rgba(53,208,192,0.3);
+        background: var(--vf-accent-soft); border: 1px solid rgba(53,208,192,0.35);
         border-radius: 12px;
+        box-shadow: 0 0 16px -2px rgba(53,208,192,0.5), inset 0 0 12px rgba(53,208,192,0.08);
     }
-    .vf-page-header h1 { font-size: 1.6rem; margin: 0; line-height: 1.15; font-weight: 700; }
-    .vf-page-header .vf-subtitle { color: var(--vf-muted); font-size: 0.92rem; margin-top: 2px; }
+    .vf-page-header h1 {
+        font-size: 1.6rem; margin: 0; line-height: 1.15; font-weight: 700;
+        text-shadow: 0 0 18px rgba(53,208,192,0.25);
+    }
+    .vf-page-header .vf-subtitle {
+        color: var(--vf-muted); font-size: 0.9rem; margin-top: 2px; font-family: var(--vf-mono);
+    }
+
+    /* ---- "About this page" info box ---- */
+    .vf-about-toggle summary { color: var(--vf-accent) !important; font-family: var(--vf-mono); font-size: 0.82rem; }
+    .vf-about-toggle { border: 1px dashed rgba(53,208,192,0.35) !important; background: rgba(53,208,192,0.035) !important; }
 
     /* ---- Metrics ---- */
     [data-testid="stMetric"] {
-        background: var(--vf-panel);
+        background: linear-gradient(160deg, var(--vf-panel) 0%, var(--vf-panel-raised) 130%);
         border: 1px solid var(--vf-border);
-        border-radius: 12px;
+        border-left: 2px solid var(--vf-accent-dim);
+        border-radius: 10px;
         padding: 16px 18px 12px 18px;
-        transition: border-color 0.15s ease;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
-    [data-testid="stMetric"]:hover { border-color: var(--vf-accent-dim); }
-    [data-testid="stMetricLabel"] { color: var(--vf-muted) !important; font-size: 0.85rem !important; }
-    [data-testid="stMetricValue"] { font-family: 'Space Grotesk', sans-serif; }
+    [data-testid="stMetric"]:hover {
+        border-color: var(--vf-accent-dim);
+        border-left-color: var(--vf-accent);
+        box-shadow: 0 0 20px -6px rgba(53,208,192,0.45);
+    }
+    [data-testid="stMetricLabel"] {
+        color: var(--vf-muted) !important; font-size: 0.78rem !important;
+        font-family: var(--vf-mono) !important; text-transform: uppercase; letter-spacing: 0.6px;
+    }
+    [data-testid="stMetricValue"] { font-family: var(--vf-mono) !important; text-shadow: 0 0 12px rgba(53,208,192,0.2); }
 
     /* ---- Expanders (used as cards throughout) ---- */
     div[data-testid="stExpander"] {
         background: var(--vf-panel);
         border: 1px solid var(--vf-border);
-        border-radius: 12px;
+        border-radius: 10px;
         margin-bottom: 10px;
         overflow: hidden;
     }
     div[data-testid="stExpander"] summary { padding: 4px 2px; }
-    div[data-testid="stExpander"]:hover { border-color: var(--vf-border-soft); }
+    div[data-testid="stExpander"]:hover { border-color: var(--vf-accent-dim); }
+
+    /* ---- Tabs ---- */
+    button[data-baseweb="tab"] { font-family: var(--vf-mono) !important; font-size: 0.85rem !important; }
+    button[data-baseweb="tab"][aria-selected="true"] { color: var(--vf-accent) !important; }
+    div[data-baseweb="tab-highlight"] { background-color: var(--vf-accent) !important; box-shadow: 0 0 8px rgba(53,208,192,0.6); }
+    div[data-baseweb="tab-border"] { background-color: var(--vf-border) !important; }
+
+    /* ---- Inputs ---- */
+    .stTextInput input, .stTextArea textarea, .stNumberInput input,
+    div[data-baseweb="select"] > div, div[data-baseweb="input"] {
+        background-color: var(--vf-panel-raised) !important;
+        border-color: var(--vf-border) !important;
+        color: var(--vf-text) !important;
+    }
+    .stTextInput input:focus, .stTextArea textarea:focus {
+        border-color: var(--vf-accent) !important;
+        box-shadow: 0 0 0 1px var(--vf-accent) !important;
+    }
 
     /* ---- Buttons ---- */
     .stButton > button {
-        border-radius: 8px !important;
+        border-radius: 6px !important;
         font-weight: 600 !important;
+        font-family: var(--vf-mono) !important;
         border: 1px solid var(--vf-border) !important;
+        transition: all 0.15s ease !important;
+    }
+    .stButton > button:hover {
+        border-color: var(--vf-accent-dim) !important;
+        box-shadow: 0 0 14px -4px rgba(53,208,192,0.5);
     }
     .stButton > button[kind="primary"] {
         background: var(--vf-accent) !important;
-        color: #0b1018 !important;
+        color: #061012 !important;
         border: none !important;
+        box-shadow: 0 0 18px -4px rgba(53,208,192,0.7);
     }
-    .stDownloadButton > button { border-radius: 8px !important; font-weight: 600 !important; }
+    .stButton > button[kind="primary"]:hover { box-shadow: 0 0 26px -2px rgba(53,208,192,0.9); }
+    .stDownloadButton > button {
+        border-radius: 6px !important; font-weight: 600 !important; font-family: var(--vf-mono) !important;
+    }
 
     /* ---- Badges (risk level chips) ---- */
     .vf-badge {
-        display: inline-block; padding: 3px 11px; border-radius: 999px;
-        font-size: 0.72rem; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+        display: inline-block; padding: 3px 11px; border-radius: 4px;
+        font-size: 0.72rem; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+        font-family: var(--vf-mono);
     }
-    .vf-badge-critical { background: rgba(229,72,77,0.15); color: #ff8b8f; border: 1px solid rgba(229,72,77,0.4); }
+    .vf-badge-critical { background: rgba(255,77,94,0.15); color: #ff8b8f; border: 1px solid rgba(255,77,94,0.45); box-shadow: 0 0 10px -3px rgba(255,77,94,0.6); }
     .vf-badge-high { background: rgba(224,167,46,0.15); color: #f0c15e; border: 1px solid rgba(224,167,46,0.4); }
     .vf-badge-medium { background: rgba(224,167,46,0.1); color: #d8c78a; border: 1px solid rgba(224,167,46,0.25); }
     .vf-badge-low { background: rgba(62,207,142,0.15); color: #71e6ab; border: 1px solid rgba(62,207,142,0.4); }
 
     /* ---- Demo banner ---- */
     .vf-demo-banner {
-        background: rgba(224,167,46,0.08);
+        background: rgba(224,167,46,0.07);
         border: 1px solid rgba(224,167,46,0.3);
-        border-radius: 10px;
+        border-left: 3px solid var(--vf-amber);
+        border-radius: 8px;
         padding: 12px 16px;
         margin-bottom: 16px;
         color: #f0c15e;
         font-size: 0.88rem;
+        font-family: var(--vf-mono);
     }
 
     /* ---- Sidebar nav section captions ---- */
     .vf-nav-caption {
-        color: var(--vf-muted); font-size: 0.72rem; font-weight: 700;
-        text-transform: uppercase; letter-spacing: 0.8px;
-        margin: 14px 0 2px 4px;
+        color: var(--vf-muted); font-size: 0.7rem; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 1px;
+        margin: 14px 0 2px 4px; font-family: var(--vf-mono);
     }
+    .vf-brand-cursor {
+        display: inline-block; width: 8px; height: 1.1em; background: var(--vf-accent);
+        margin-left: 2px; vertical-align: text-bottom; animation: vf-blink 1.1s steps(1) infinite;
+        box-shadow: 0 0 6px var(--vf-accent);
+    }
+    @keyframes vf-blink { 50% { opacity: 0; } }
 
     /* tighten default streamlit radio spacing in sidebar for a nav-menu feel */
     section[data-testid="stSidebar"] div[role="radiogroup"] label {
-        padding: 3px 6px; border-radius: 6px;
+        padding: 4px 8px; border-radius: 6px; font-size: 0.92rem;
+        transition: background 0.15s ease;
     }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:hover { background: rgba(53,208,192,0.06); }
+
+    /* ---- Scrollbar ---- */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: var(--vf-bg-alt); }
+    ::-webkit-scrollbar-thumb { background: var(--vf-border); border-radius: 6px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--vf-accent-dim); }
 
     hr { border-color: var(--vf-border-soft) !important; }
     </style>
@@ -191,8 +293,13 @@ st.markdown(
 )
 
 
-def page_header(icon: str, title: str, subtitle: str = ""):
-    """Consistent icon + title (+ optional subtitle) header used at the top of every page."""
+def page_header(icon: str, title: str, subtitle: str = "", about: str = ""):
+    """Consistent icon + title (+ optional subtitle) header used at the top of every page.
+
+    `about`, when provided, renders a collapsed "What is this page & why does it exist?"
+    expander right under the header — meant for walking someone else through the app
+    (a mentor, a client, an interviewer) without having to explain each screen from memory.
+    """
     sub_html = f'<div class="vf-subtitle">{subtitle}</div>' if subtitle else ""
     st.markdown(
         f"""
@@ -203,6 +310,9 @@ def page_header(icon: str, title: str, subtitle: str = ""):
         """,
         unsafe_allow_html=True,
     )
+    if about:
+        with st.expander("🛈 What this page does, and why it exists", expanded=False):
+            st.markdown(about)
     st.write("")  # small breathing room below the header
 
 
@@ -346,7 +456,20 @@ def requirement_id_for_sub(sub_id):
 # ----------------------------------------------------------------------------
 if page == "Upload & Analyze":
     page_header("📤", "Upload evidence for AI assessment",
-                "Sufficiency scoring, cross-requirement mapping, and gap detection in one pass")
+                "Sufficiency scoring, cross-requirement mapping, and gap detection in one pass",
+                about=(
+                    "**This is the front door of the app.** You upload one artifact — a policy doc, "
+                    "a config screenshot, a scan report, anything — and optionally tell it which PCI DSS "
+                    "sub-requirement it's meant to prove.\n\n"
+                    "**What happens when you click Analyze:** the file is saved, its text/content is sent "
+                    "to Google Gemini for review, and the AI hands back a 0–100 sufficiency score, a "
+                    "maturity label, any gaps it sees, and concrete recommendations — sometimes mapping "
+                    "one file to *several* sub-requirements at once.\n\n"
+                    "**Why it exists:** manually cross-checking each piece of evidence against 12 "
+                    "requirements and dozens of sub-requirements is the slowest part of a real PCI DSS "
+                    "self-assessment. This page automates that first read so a human only needs to "
+                    "review and confirm, not start from a blank page."
+                ))
     st.write(
         "Upload a policy document, configuration screenshot, scan report, or similar artifact. "
         "The AI will assess its **sufficiency**, assign a **compliance/maturity score**, check whether "
@@ -434,7 +557,16 @@ if page == "Upload & Analyze":
 # compliance_engine / risk_engine for numbers and draws them with Plotly.
 # ----------------------------------------------------------------------------
 elif page == "Compliance Dashboard":
-    page_header("📊", "Compliance Dashboard", "Overall PCI DSS posture, scoped to your selected SAQ type")
+    page_header("📊", "Compliance Dashboard", "Overall PCI DSS posture, scoped to your selected SAQ type",
+                about=(
+                    "**This is the big-picture page.** It takes every score stored so far and rolls it "
+                    "up into one overall compliance percentage, plus a percentage per top-level "
+                    "requirement (1–12), a trend line of scores over time, and a risk heatmap.\n\n"
+                    "**Nothing is calculated here** — this page only asks `compliance_engine` / "
+                    "`risk_engine` for numbers and draws them with Plotly. The real math lives in `src/`.\n\n"
+                    "**Why it exists:** it's the single screen you'd show a manager or a QSA to answer "
+                    "\"where do we stand right now, and scoped to what actually applies to us?\""
+                ))
     summary = ce.compute_compliance_summary()
     saq_def = sd.get_saq_definition(summary["saq_type"])
     risks = db.get_all_risks()
@@ -614,7 +746,18 @@ elif page == "Compliance Dashboard":
 elif page == "SAQ Scoping":
     page_header("🎯", "SAQ Type Selection & Scoping",
                 "Pick the SAQ type that matches how you handle cardholder data — this determines "
-                "which of the 12 requirements are actually in scope")
+                "which of the 12 requirements are actually in scope",
+                about=(
+                    "**This should usually be the first page a new user visits.** You tell the app "
+                    "which Self-Assessment Questionnaire (SAQ) type describes your business — that "
+                    "choice is saved and remembered.\n\n"
+                    "**Why it matters:** every other page then uses this setting to decide which of "
+                    "the 12 top-level PCI DSS requirements are actually *in scope* for you. A business "
+                    "that only uses a hosted payment page (SAQ A) has a much smaller in-scope surface "
+                    "than one that stores cardholder data directly (SAQ D) — so the headline compliance "
+                    "% you see on the Dashboard only reflects what your business actually needs to "
+                    "satisfy, not the full standard."
+                ))
     current_saq = ce.get_current_saq_type()
     st.warning(
         "**Accuracy note:** the mapping below is a simplified approximation at the level of the 12 "
@@ -668,7 +811,14 @@ elif page == "SAQ Scoping":
 elif page == "CDE Scope":
     page_header("🗺️", "Cardholder Data Environment (CDE) Scope",
                 "Document what's in scope, what's out of scope, and what's connected-to/security-"
-                "impacting the CDE")
+                "impacting the CDE",
+                about=(
+                    "**A form + table for listing every system that is inside, or connected to, the "
+                    "CDE** — the part of your network that actually touches card data.\n\n"
+                    "**This is pure bookkeeping:** no AI, no scoring. It just records what you tell it, "
+                    "so anyone reviewing the assessment can see exactly where the perimeter was drawn "
+                    "and why — a required artifact for any real PCI DSS assessment."
+                ))
     st.caption(
         "PCI DSS v4.0 Requirement 1.2.4 expects a current, accurate inventory of in-scope systems "
         "plus network and data-flow diagrams. This page tracks the system inventory; keep your "
@@ -750,7 +900,16 @@ elif page == "CDE Scope":
 # ----------------------------------------------------------------------------
 elif page == "Compensating Controls":
     page_header("🛡️", "Compensating Controls Worksheet",
-                "Document an alternative control when a standard requirement can't be implemented as written")
+                "Document an alternative control when a standard requirement can't be implemented as written",
+                about=(
+                    "**Sometimes a company can't implement a control exactly as PCI DSS describes it,** "
+                    "so it documents an equivalent \"compensating control\" instead — same risk reduction, "
+                    "different mechanism.\n\n"
+                    "**This page is a structured form** for writing that justification down: why the "
+                    "standard control doesn't fit, what alternative meets the same goal, and who signed "
+                    "off. Pure record-keeping, no AI involved — but it's the exact artifact a QSA will "
+                    "ask for during a real audit."
+                ))
     st.caption(
         "Modeled on PCI DSS Appendix B/C guidance: a compensating control must meet the intent and "
         "rigor of the original requirement, provide a similar level of defense, be above and beyond "
@@ -836,7 +995,16 @@ elif page == "Compensating Controls":
 elif page == "Testing Tracker (Req 11)":
     page_header("🧪", "Recurring Testing Tracker",
                 "Requirement 11: ASV quarterly external scans, internal scans, annual penetration "
-                "tests, and segmentation testing — with due dates, not one-time evidence")
+                "tests, and segmentation testing — with due dates, not one-time evidence",
+                about=(
+                    "**PCI DSS Requirement 11 needs proof of recurring testing, not a one-off scan.** "
+                    "Vulnerability scans, penetration tests, and segmentation checks all run on a "
+                    "schedule (quarterly, annual, etc.).\n\n"
+                    "**This page logs each test and its result**, and automatically works out — via "
+                    "`compliance_engine.suggest_next_due_date()` / `testing_tracker_status()` — whether "
+                    "the *next* one is On track, Due soon, or Overdue. It turns a compliance requirement "
+                    "that's easy to forget about into something with a visible clock on it."
+                ))
     tt_summary = ce.testing_tracker_summary()
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("🔴 Overdue", tt_summary["Overdue"])
@@ -947,7 +1115,15 @@ elif page == "Testing Tracker (Req 11)":
 elif page == "Vendor / TPSP Register":
     page_header("🤝", "Vendor / TPSP Management Register",
                 "Requirements 12.8 & 12.9 — third-party service providers, tracked separately from "
-                "general evidence")
+                "general evidence",
+                about=(
+                    "**A CRM-style table for every third-party service provider (TPSP)** that touches "
+                    "your cardholder data environment: payment processors, cloud hosts, MSSPs, etc.\n\n"
+                    "**For each vendor it tracks** what they do, how they connect, and whether their "
+                    "own PCI DSS attestation (AOC / SAQ / ROC) is still current. No AI or scoring — "
+                    "just structured record-keeping for Requirements 12.8 & 12.9, which specifically "
+                    "require you to manage vendor compliance, not just your own."
+                ))
 
     with st.expander("➕ Add a vendor / TPSP"):
         with st.form("add_vendor_form", clear_on_submit=True):
@@ -1032,7 +1208,15 @@ elif page == "Vendor / TPSP Register":
 
 elif page == "Identified Risks":
     page_header("⚠️", "Identified Risks",
-                "Internal risk items tracked from this tool — not your organization's official risk register")
+                "Internal risk items tracked from this tool — not your organization's official risk register",
+                about=(
+                    "**A lightweight risk register**, scored on a standard 5×5 Likelihood × Impact "
+                    "matrix (1–25) — the same model used across GRC and SOC risk-triage work.\n\n"
+                    "**Risks get added two ways:** manually, or auto-generated by syncing unresolved "
+                    "gaps from the Gap Report. This turns \"the AI found a weak control\" into a "
+                    "trackable item with a severity, an owner, and a status — the bridge between "
+                    "an assessment finding and an actual remediation plan."
+                ))
     st.write(
         "Tracked risks, scored on a standard 5×5 **Likelihood × Impact** matrix (1–25). "
         "Items are either added manually or generated automatically from open compliance gaps."
@@ -1169,7 +1353,16 @@ elif page == "Identified Risks":
 # ----------------------------------------------------------------------------
 elif page == "Gap Report":
     page_header("🕳️", "Gap Report & Remediation Plan",
-                f"Sub-requirements below the compliant threshold ({ce.COMPLIANT_THRESHOLD}/100)")
+                f"Sub-requirements below the compliant threshold ({ce.COMPLIANT_THRESHOLD}/100)",
+                about=(
+                    "**Shows exactly which sub-requirements are still below the compliant score "
+                    "threshold**, worst-first, along with the specific gaps and recommendations "
+                    "attached to each one — either from the AI's last assessment, or a default "
+                    "message if no evidence has been uploaded for it yet.\n\n"
+                    "**All the data comes straight from** `compliance_engine.build_gap_report()`; this "
+                    "page only displays it and offers a one-click *sync these gaps into Identified "
+                    "Risks* button. It's the action list version of the Dashboard's percentages."
+                ))
     gaps = ce.build_gap_report()
 
     if not gaps:
@@ -1207,7 +1400,15 @@ elif page == "Gap Report":
 # numbers.
 # ----------------------------------------------------------------------------
 elif page == "Requirement Explorer":
-    page_header("📚", "PCI DSS Requirement Explorer", "Browse the full catalog and current evidence status")
+    page_header("📚", "PCI DSS Requirement Explorer", "Browse the full catalog and current evidence status",
+                about=(
+                    "**A read-only, browsable view of the entire PCI DSS catalog**, loaded from "
+                    "`data/pci_dss_data.json`, with the current score/status shown next to each "
+                    "sub-requirement.\n\n"
+                    "**Why it exists:** the Dashboard tells you *how well* you're doing; this page "
+                    "tells you *what a requirement actually asks for* — useful for understanding "
+                    "context, independent of any score."
+                ))
     st.caption(
         "Condensed, paraphrased reference data bundled with this demo — for real assessments always "
         "consult the official PCI DSS standard from the PCI Security Standards Council."
@@ -1236,7 +1437,15 @@ elif page == "Requirement Explorer":
 # used later to prove a stored file hasn't been tampered with.
 # ----------------------------------------------------------------------------
 elif page == "Evidence Log":
-    page_header("🗂️", "Evidence Log", "Every artifact submitted so far, in one place")
+    page_header("🗂️", "Evidence Log", "Every artifact submitted so far, in one place",
+                about=(
+                    "**A chronological table of every file ever uploaded**, pulled straight from the "
+                    "`evidence` table, including each file's **SHA-256 hash** — a fingerprint that "
+                    "changes the instant the file's bytes change.\n\n"
+                    "**Why the hash matters:** it lets you (or an auditor) later prove a stored piece "
+                    "of evidence hasn't been silently swapped or edited since it was submitted — the "
+                    "same integrity-verification idea used in digital forensics chain-of-custody."
+                ))
     evidence = db.get_all_evidence()
     if not evidence:
         st.info("No evidence submitted yet.")
@@ -1262,7 +1471,15 @@ elif page == "Evidence Log":
 # mistaken for live functionality.
 # ----------------------------------------------------------------------------
 elif page == "Automated Connectors (demo)":
-    page_header("🔌", "Automated Evidence Ingestion", "Roadmap concept — not a live integration")
+    page_header("🔌", "Automated Evidence Ingestion", "Roadmap concept — not a live integration",
+                about=(
+                    "**Not a real feature yet.** This page only shows what it would look like to "
+                    "auto-pull evidence from tools like AWS Config, Wazuh, or a vulnerability scanner, "
+                    "using hardcoded sample data.\n\n"
+                    "**Why it's here:** it's a UI mockup for planning future work — clearly labeled "
+                    "with the demo banner below so it's never mistaken for something actually wired up. "
+                    "No connector on this page reads real data or credentials."
+                ))
     demo_banner(
         "this page is a UI mockup of a planned feature. No connector below is actually wired up to "
         "Wazuh, Splunk, or Nessus — nothing here reads real data or credentials."
@@ -1303,7 +1520,15 @@ elif page == "Automated Connectors (demo)":
 # Uses sample/illustrative data only.
 # ----------------------------------------------------------------------------
 elif page == "Alerts & Drift (demo)":
-    page_header("📡", "Compliance Drift Alerts", "Roadmap concept — not a live integration")
+    page_header("📡", "Compliance Drift Alerts", "Roadmap concept — not a live integration",
+                about=(
+                    "**Also not a real feature yet.** A mockup of what alerts would look like if the "
+                    "app could detect that a previously-compliant control had *drifted* out of "
+                    "compliance — e.g. a firewall rule changed, an S3 bucket went public.\n\n"
+                    "**Why it's here:** it illustrates a planned direction (continuous monitoring, not "
+                    "just point-in-time assessment). The alerts and score changes shown are sample/"
+                    "illustrative data only, not derived from your real evidence."
+                ))
     demo_banner(
         "the alerts and score changes below are illustrative sample data, not derived from your "
         "actual uploaded evidence. A real version would compare successive AI assessments per "
@@ -1333,7 +1558,15 @@ elif page == "Alerts & Drift (demo)":
 # (reviewer sign-off, sampling notes, a separate read-only auditor login).
 # ----------------------------------------------------------------------------
 elif page == "QSA Audit View (demo)":
-    page_header("🧾", "QSA Audit View", "Roadmap concept — not a live integration")
+    page_header("🧾", "QSA Audit View", "Roadmap concept — not a live integration",
+                about=(
+                    "**Mostly real, partly mockup.** The compliance %, per-file SHA-256 hashes, and "
+                    "the *Generate audit PDF* button below are wired to your real data.\n\n"
+                    "**What's still just a sketch** is the rest of a full auditor workflow: reviewer "
+                    "sign-off, sampling notes, and a separate read-only auditor login. This page shows "
+                    "what handing the assessment off to a QSA (Qualified Security Assessor) could look "
+                    "like once that part is built."
+                ))
     demo_banner(
         "this is a UI concept for a future read-only auditor view. The compliance %, evidence "
         "hashes, and PDF export below are all real (pulled from your actual data). What's still "

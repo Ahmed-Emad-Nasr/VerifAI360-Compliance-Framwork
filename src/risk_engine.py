@@ -35,7 +35,6 @@ single 'auto-gap' sourced risk-register row per sub-requirement, without
 touching any risk a user has manually edited into a different status.
 """
 
-import datetime
 from . import database as db
 
 # Impact weight (1-5) per top-level PCI DSS requirement. Reflects how

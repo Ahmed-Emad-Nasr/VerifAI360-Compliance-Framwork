@@ -98,6 +98,7 @@ Known limitations (surfaced in the UI, not hidden):
 
 import os
 import re
+from difflib import SequenceMatcher
 
 ENGINE_NAME = "local"
 
@@ -113,10 +114,19 @@ STOPWORDS = {
     "each", "other", "over", "under", "per", "via", "etc", "e.g", "eg",
 }
 
-KEYWORD_WEIGHT = 0.60
-CONTEXT_TITLE_WEIGHT = 0.20
-CONTEXT_EXAMPLE_WEIGHT = 0.20
-FILENAME_BONUS_MAX = 10
+# Every tunable number the scoring model uses lives in one dict, so the
+# Settings page can override any of them (persisted via
+# database.get_settings_json("local_engine_weights")) without touching
+# code. Values here are the defaults used when nothing is overridden.
+DEFAULT_WEIGHTS = {
+    "keyword": 0.60,          # curated evidence_keywords — primary signal
+    "title": 0.20,            # sub-requirement title/summary + parent req title vocabulary
+    "example": 0.20,          # example_evidence vocabulary
+    "fuzzy_credit": 0.70,     # a fuzzy (typo-tolerant) keyword match counts as this fraction of an exact one
+    "fuzzy_threshold": 0.84,   # SequenceMatcher similarity ratio (0-1) required to count as a fuzzy match
+    "filename_bonus_max": 10,  # cap on points added when the filename corroborates matched content
+    "substance_bonus": 6,      # small bonus when >=2 distinct keywords matched in a non-trivial document
+}
 
 
 class LocalAnalyzerError(Exception):
@@ -134,15 +144,39 @@ def _significant_words(text: str) -> set:
     return {w for w in words if w not in STOPWORDS}
 
 
-def _keyword_hits(text_norm: str, keywords: list) -> list:
-    hits = []
+def _fuzzy_ratio(a: str, b: str) -> float:
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _keyword_hits(text_norm: str, keywords: list, fuzzy_threshold: float):
+    """Returns (exact_hits, fuzzy_hits). Exact hits are literal substring
+    matches (full credit). Fuzzy hits are near-misses — e.g. a typo like
+    'firewal policy' instead of 'firewall policy' — found by sliding a
+    same-length word-window across the text and comparing it to the
+    keyword phrase with difflib's similarity ratio. Fuzzy hits get partial
+    credit (see DEFAULT_WEIGHTS['fuzzy_credit']) and are always labeled as
+    fuzzy in the rationale, never silently treated as an exact match."""
+    text_words = text_norm.split()
+    exact_hits, fuzzy_hits = [], []
     for kw in keywords:
         kw_norm = (kw or "").lower().strip()
         if not kw_norm:
             continue
         if re.search(re.escape(kw_norm), text_norm):
-            hits.append(kw)
-    return hits
+            exact_hits.append(kw)
+            continue
+        kw_word_count = len(kw_norm.split())
+        best = 0.0
+        for i in range(0, max(0, len(text_words) - kw_word_count + 1)):
+            window = " ".join(text_words[i:i + kw_word_count])
+            ratio = _fuzzy_ratio(kw_norm, window)
+            if ratio > best:
+                best = ratio
+            if best >= 0.999:
+                break
+        if best >= fuzzy_threshold:
+            fuzzy_hits.append(kw)
+    return exact_hits, fuzzy_hits
 
 
 def _word_hits(text_norm: str, words: set) -> set:
@@ -174,17 +208,20 @@ def _filename_terms(filename: str) -> set:
 
 
 def analyze_evidence(evidence_text: str, pci_data: dict, target_sub_requirement: str = None,
-                      prior_context: str = "", filename: str = "") -> dict:
+                      prior_context: str = "", filename: str = "", weights: dict = None) -> dict:
     """
-    Same input/output contract as ai_analyzer.analyze_evidence(), plus an
-    optional `filename` used only as a small corroborating signal (see
-    module docstring). compliance_engine.process_uploaded_evidence() calls
-    this interchangeably with the AI engine. `prior_context` is accepted
-    only for interface compatibility — this engine scores the current
-    file in isolation.
+    Same input/output contract as ai_analyzer.analyze_evidence(), plus two
+    local-only extras: `filename` (a small corroborating signal — see
+    module docstring) and `weights` (overrides for DEFAULT_WEIGHTS, e.g.
+    from the Settings page via database.get_settings_json("local_engine_weights")).
+    compliance_engine.process_uploaded_evidence() calls this interchangeably
+    with the AI engine. `prior_context` is accepted only for interface
+    compatibility — this engine scores the current file in isolation.
     """
     if not evidence_text or not evidence_text.strip():
         raise LocalAnalyzerError("No text could be extracted from this evidence file — nothing to analyze.")
+
+    w = {**DEFAULT_WEIGHTS, **(weights or {})}
 
     text_norm = _normalize(evidence_text)
     word_count = len(text_norm.split())
@@ -198,23 +235,24 @@ def analyze_evidence(evidence_text: str, pci_data: dict, target_sub_requirement:
             if not keywords:
                 continue
 
-            # --- Signal 1: curated evidence_keywords (primary, weight 0.60) ---
-            kw_hits = _keyword_hits(text_norm, keywords)
-            kw_score = (len(kw_hits) / len(keywords)) * 100 if keywords else 0.0
+            # --- Signal 1: curated evidence_keywords, exact + fuzzy (primary) ---
+            exact_hits, fuzzy_hits = _keyword_hits(text_norm, keywords, w["fuzzy_threshold"])
+            weighted_hit_count = len(exact_hits) + w["fuzzy_credit"] * len(fuzzy_hits)
+            kw_score = (weighted_hit_count / len(keywords)) * 100 if keywords else 0.0
 
-            # --- Signal 2: title + summary + parent requirement title vocabulary (weight 0.20) ---
+            # --- Signal 2: title + summary + parent requirement title vocabulary ---
             title_pool = _significant_words(sub.get("title", "") + " " + sub.get("summary", "")) | req_title_terms
             title_hits = _word_hits(text_norm, title_pool) if title_pool else set()
             title_score = (len(title_hits) / len(title_pool)) * 100 if title_pool else 0.0
 
-            # --- Signal 3: example_evidence vocabulary (weight 0.20) ---
+            # --- Signal 3: example_evidence vocabulary ---
             examples = sub.get("example_evidence") or []
             example_pool = _significant_words(" ".join(examples))
             example_hits = _word_hits(text_norm, example_pool) if example_pool else set()
             example_score = (len(example_hits) / len(example_pool)) * 100 if example_pool else 0.0
 
             is_target = target_sub_requirement is not None and sub["id"] == target_sub_requirement
-            if not kw_hits and not is_target:
+            if not exact_hits and not fuzzy_hits and not is_target:
                 # Context-only overlap isn't enough to claim relevance on its
                 # own (too many sub-requirements would match on generic
                 # words like "policy" or "review") — mirrors the AI engine's
@@ -226,23 +264,20 @@ def analyze_evidence(evidence_text: str, pci_data: dict, target_sub_requirement:
             # Filename bonus only counts terms that are BOTH in the filename
             # AND actually present in the extracted text — a suggestive
             # filename with no matching content can't inflate the score.
-            file_bonus_terms = file_overlap & (title_hits | example_hits | set(kw_hits))
-            filename_bonus = min(FILENAME_BONUS_MAX, len(file_bonus_terms) * 4) if file_bonus_terms else 0
+            file_bonus_terms = file_overlap & (title_hits | example_hits | set(exact_hits) | set(fuzzy_hits))
+            filename_bonus = min(w["filename_bonus_max"], len(file_bonus_terms) * 4) if file_bonus_terms else 0
 
-            score = (
-                KEYWORD_WEIGHT * kw_score
-                + CONTEXT_TITLE_WEIGHT * title_score
-                + CONTEXT_EXAMPLE_WEIGHT * example_score
-            )
+            score = w["keyword"] * kw_score + w["title"] * title_score + w["example"] * example_score
             # Substance bonus: several distinct curated-keyword matches in a
             # document that isn't trivially short is a decent signal this is
             # a real artifact, not a buzzword dropped into unrelated text.
-            if len(kw_hits) >= 2 and word_count >= 40:
-                score += 6
+            if (len(exact_hits) + len(fuzzy_hits)) >= 2 and word_count >= 40:
+                score += w["substance_bonus"]
             score = round(score) + filename_bonus
             score = max(0, min(100, score))
 
-            missing_kw = [k for k in keywords if k not in kw_hits]
+            found_kw = set(exact_hits) | set(fuzzy_hits)
+            missing_kw = [k for k in keywords if k not in found_kw]
             gaps = [f"No mention found of: \u2018{k}\u2019" for k in missing_kw[:6]]
 
             recommendations = []
@@ -257,9 +292,15 @@ def analyze_evidence(evidence_text: str, pci_data: dict, target_sub_requirement:
                     )
 
             rationale_parts = [
-                f"Curated keywords: {len(kw_hits)}/{len(keywords)} matched"
-                + (f" ({', '.join(repr(h) for h in kw_hits)})" if kw_hits else "") + "."
+                f"Curated keywords: {len(exact_hits)}/{len(keywords)} exact match"
+                + (f" ({', '.join(repr(h) for h in exact_hits)})" if exact_hits else "") + "."
             ]
+            if fuzzy_hits:
+                rationale_parts.append(
+                    f"+{len(fuzzy_hits)} fuzzy/typo-tolerant match"
+                    f"{'es' if len(fuzzy_hits) != 1 else ''} ({', '.join(repr(h) for h in fuzzy_hits)}), "
+                    f"counted at {int(w['fuzzy_credit'] * 100)}% credit."
+                )
             if title_pool:
                 rationale_parts.append(
                     f"Title/summary vocabulary: {len(title_hits)}/{len(title_pool)} terms found."
@@ -290,7 +331,8 @@ def analyze_evidence(evidence_text: str, pci_data: dict, target_sub_requirement:
 
     summary = (
         f"Offline multi-signal scan of a {word_count}-word document \u2014 checked against curated "
-        f"keywords, title/summary vocabulary, example-evidence vocabulary"
+        f"keywords (with typo-tolerant fuzzy matching), title/summary vocabulary, example-evidence "
+        f"vocabulary"
         + (f", and the filename '{filename}'" if filename else "")
         + f" for every PCI DSS sub-requirement. Matched {len(assessments)} sub-requirement(s). "
         "No data left this machine and no AI model was called."

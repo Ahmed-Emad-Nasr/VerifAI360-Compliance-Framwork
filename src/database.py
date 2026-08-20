@@ -54,6 +54,8 @@ import hashlib
 import datetime
 from contextlib import contextmanager
 
+from . import security as sec
+
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "verifai360.db")
 
 
@@ -81,6 +83,8 @@ def init_db():
                 uploaded_at TEXT NOT NULL,
                 target_sub_requirement TEXT,
                 raw_text_excerpt TEXT,
+                text_encrypted INTEGER NOT NULL DEFAULT 0,  -- 1 = raw_text_excerpt (and the file on
+                                                             -- disk at stored_path) are Fernet-encrypted
                 sha256 TEXT
             );
 
@@ -216,6 +220,12 @@ def _migrate_add_missing_columns(conn):
         # necessarily produced by the AI engine — backfill accordingly.
         conn.execute("ALTER TABLE sub_req_assessment ADD COLUMN analysis_source TEXT NOT NULL DEFAULT 'ai'")
 
+    if "text_encrypted" not in cols:
+        # Existing rows predate encryption-at-rest, so their text/files are
+        # plain — flag them 0 so get_evidence_text()/decrypt paths know not
+        # to attempt decryption on data that was never encrypted.
+        conn.execute("ALTER TABLE evidence ADD COLUMN text_encrypted INTEGER NOT NULL DEFAULT 0")
+
 
 def _backfill_sha256(conn):
     """One-time backfill: compute real SHA-256 hashes for evidence rows uploaded before this
@@ -234,17 +244,53 @@ def _backfill_sha256(conn):
 
 
 def insert_evidence(filename, stored_path, evidence_type, target_sub_requirement, raw_text_excerpt,
-                     sha256=None):
+                     sha256=None, encrypt=True):
+    """
+    Stores an evidence row. When encrypt=True (the default — see
+    security.py for the "encryption at rest" design), the stored text
+    excerpt is Fernet-encrypted before it touches disk; the caller
+    (compliance_engine.py) is responsible for encrypting the evidence
+    FILE at stored_path the same way, since this function only owns the
+    database row.
+    """
+    excerpt = raw_text_excerpt[:2000] if raw_text_excerpt else ""
+    if encrypt and excerpt:
+        excerpt = sec.encrypt_text(excerpt)
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO evidence
                (filename, stored_path, evidence_type, uploaded_at, target_sub_requirement,
-                raw_text_excerpt, sha256)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                raw_text_excerpt, text_encrypted, sha256)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (filename, stored_path, evidence_type, datetime.datetime.utcnow().isoformat(),
-             target_sub_requirement, raw_text_excerpt[:2000] if raw_text_excerpt else "", sha256),
+             target_sub_requirement, excerpt, int(bool(encrypt and raw_text_excerpt)), sha256),
         )
         return cur.lastrowid
+
+
+def find_evidence_by_hash(sha256):
+    """Used for duplicate-upload detection: returns the existing evidence row
+    with this exact SHA-256 (same bytes, so almost certainly the same file),
+    or None if this is a genuinely new file."""
+    if not sha256:
+        return None
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM evidence WHERE sha256 = ? LIMIT 1", (sha256,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_evidence_text(evidence_id):
+    """Returns the decrypted text excerpt for one evidence row (or the raw
+    value as-is if it predates encryption-at-rest)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT raw_text_excerpt, text_encrypted FROM evidence WHERE id = ?", (evidence_id,)
+        ).fetchone()
+        if not row:
+            return ""
+        if row["text_encrypted"]:
+            return sec.decrypt_text(row["raw_text_excerpt"])
+        return row["raw_text_excerpt"] or ""
 
 
 def insert_assessment(evidence_id, sub_requirement_id, is_primary_target, sufficiency_score,

@@ -578,6 +578,110 @@ def _cover_page_background(canvas, doc):
         _header_footer(canvas, doc)
 
 
+def generate_executive_summary_pdf() -> bytes:
+    """
+    A short (target: 1 page, occasionally spilling to 2 for a business with
+    many open risks), manager-facing companion to the full audit report —
+    just the headline compliance %, SAQ scope, and a compact per-requirement
+    table. Deliberately does NOT reuse _compliance_by_requirement() (which
+    prints a full sub-requirement-level table per requirement — the right
+    level of detail for the full audit report, way too much for a one-pager)
+    or _saq_scope_summary() (forces its own page break). Everything here is
+    built fresh at summary-only granularity, with no page breaks at all.
+    """
+    summary = ce.compute_compliance_summary()
+    exposure = re_.risk_exposure_summary(db.get_all_risks())
+    n_evidence = len(db.get_all_evidence())
+    n_compliant = sum(
+        1 for r in summary["requirements"] for s in r["sub_requirements"] if s["status"] == "Compliant"
+    )
+    n_total = sum(len(r["sub_requirements"]) for r in summary["requirements"])
+    n_keys = ai.get_key_count()
+    saq_def = sd.get_saq_definition(summary["saq_type"])
+
+    styles = _styles()
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=PAGE_SIZE,
+        leftMargin=MARGIN, rightMargin=MARGIN, topMargin=1.8 * cm, bottomMargin=2 * cm,
+        title="VerifAI 360 - Executive Summary",
+        author="VerifAI 360",
+    )
+
+    story = [
+        Paragraph("PCI DSS Compliance — Executive Summary", styles["VFH1"]),
+        Paragraph(
+            f"Generated {datetime.date.today().isoformat()} · SAQ type: {saq_def['label']} · "
+            f"VerifAI 360 automated self-assessment",
+            styles["VFCaption"],
+        ),
+        Spacer(1, 8),
+        _disclaimer_banner(styles),
+        Spacer(1, 10),
+    ]
+
+    # --- headline metrics, one compact table ---
+    rows = [
+        ["Overall PCI DSS compliance", f"{summary['overall_pct']}%"],
+        ["Sub-requirements compliant", f"{n_compliant} / {n_total}"],
+        ["Evidence artifacts submitted", str(n_evidence)],
+        ["Open risk exposure (Likelihood x Impact, sum)", str(exposure["total_open_exposure"])],
+        ["Critical risks currently open", str(exposure["critical_open"])],
+        ["Analysis redundancy (Gemini API keys configured)", str(n_keys)],
+    ]
+    t = Table([["Metric", "Value"]] + rows, colWidths=[10.5 * cm, 5.5 * cm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), ACCENT_DARK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT_BG]),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#d5dee0")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 14))
+
+    # --- one row per top-level requirement, no sub-requirement drill-down ---
+    story.append(Paragraph("Compliance by Requirement", styles["VFH2"]))
+    header = ["#", "Requirement", "Score"]
+    data = [header]
+    for req in summary["requirements"]:
+        data.append([req["id"], Paragraph(req["title"], styles["VFCell"]), f"{req['pct']}%"])
+    t2 = Table(data, colWidths=[1.2 * cm, 12.3 * cm, 2.5 * cm], repeatRows=1)
+    style_cmds = [
+        ("BACKGROUND", (0, 0), (-1, 0), ACCENT),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.6),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#d5dee0")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]
+    for i, req in enumerate(summary["requirements"], start=1):
+        pct = req["pct"]
+        color = colors.HexColor("#1e8a5f") if pct >= 90 else (
+            colors.HexColor("#b8860b") if pct >= 55 else colors.HexColor("#c0392b"))
+        style_cmds.append(("TEXTCOLOR", (2, i), (2, i), color))
+        style_cmds.append(("FONTNAME", (2, i), (2, i), "Helvetica-Bold"))
+    t2.setStyle(TableStyle(style_cmds))
+    story.append(t2)
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(
+        "For evidence-level detail, gap remediation recommendations, the full risk register, and "
+        "audit trail, see the full VerifAI 360 audit report.",
+        styles["VFCaption"],
+    ))
+
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
+    return buffer.getvalue()
+
+
 def generate_pdf_report() -> bytes:
     """
     Builds the full VerifAI 360 compliance report and returns it as raw PDF

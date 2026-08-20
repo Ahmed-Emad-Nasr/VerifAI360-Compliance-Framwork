@@ -18,6 +18,7 @@ import re
 import json
 import shutil
 import hashlib
+import secrets
 import datetime
 
 from . import database as db
@@ -25,6 +26,7 @@ from . import evidence_processor as ep
 from . import ai_analyzer as ai
 from . import local_analyzer as la
 from . import scoping_data as sd
+from . import security as sec
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 EVIDENCE_STORE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "evidence_store")
@@ -35,6 +37,21 @@ MAX_EVIDENCE_FILE_BYTES = 25 * 1024 * 1024  # 25 MB — prevents resource-exhaus
 class EvidenceUploadError(Exception):
     """Raised for security/validation problems with an incoming upload, before any processing happens."""
     pass
+
+
+class DuplicateEvidenceError(Exception):
+    """Raised when an upload's SHA-256 exactly matches an evidence file already on record — lets the
+    UI ask 'this exact file was already submitted, re-analyze anyway?' instead of silently duplicating
+    work (and silently duplicating an AI API call, if analysis_mode='ai')."""
+
+    def __init__(self, existing_evidence_id, existing_filename, existing_uploaded_at):
+        self.existing_evidence_id = existing_evidence_id
+        self.existing_filename = existing_filename
+        self.existing_uploaded_at = existing_uploaded_at
+        super().__init__(
+            f"This exact file was already uploaded as '{existing_filename}' "
+            f"(evidence #{existing_evidence_id}, on {existing_uploaded_at})."
+        )
 
 
 def _safe_stored_filename(original_filename: str, stamp: str) -> str:
@@ -54,14 +71,18 @@ def _safe_stored_filename(original_filename: str, stamp: str) -> str:
     return f"{stamp}_{base}"
 
 
-def _sha256_of_file(path: str) -> str:
+def sha256_of_file(path: str) -> str:
     """Real per-file SHA-256 integrity hash, computed from the stored bytes on disk (streamed, not
-    loaded fully into memory, so it stays cheap even near the 25 MB upload cap)."""
+    loaded fully into memory, so it stays cheap even near the 25 MB upload cap). Public — the
+    Upload & Analyze page uses this to pre-check for duplicates before spending an AI call."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+_sha256_of_file = sha256_of_file  # internal alias, kept for readability at call sites below
 
 
 def load_pci_data() -> dict:
@@ -79,21 +100,29 @@ ANALYSIS_ENGINES = {"ai": "AI-powered (Gemini)", "local": "Local rule-based (off
 
 
 def process_uploaded_evidence(source_filepath: str, original_filename: str, target_sub_requirement: str = None,
-                               analysis_mode: str = "ai"):
+                               analysis_mode: str = "ai", allow_duplicate: bool = False):
     """
     Full pipeline for one evidence upload:
-      1. Copy file into evidence_store/
-      2. Extract text
-      3. Build 'prior context' string from previously-submitted evidence
+      1. Copy file into evidence_store/ (plaintext, briefly)
+      2. Compute its SHA-256 and check for an exact duplicate already on
+         file — raises DuplicateEvidenceError unless allow_duplicate=True,
+         so re-uploading the same file twice doesn't silently burn a second
+         AI API call or clutter the evidence log unless that's intentional
+      3. Extract text (while the file is still plaintext on disk)
+      4. Encrypt the file at rest in place (see security.py) — from this
+         point on, stored_path holds Fernet-encrypted bytes, not the
+         original file
+      5. Build 'prior context' string from previously-submitted evidence
          near the target sub-requirement (helps the AI reason about
          cumulative maturity, not just this one file in isolation)
-      4. Call the analysis engine — either the AI analyzer (ai_analyzer.py,
+      6. Call the analysis engine — either the AI analyzer (ai_analyzer.py,
          calls Gemini) or the local analyzer (local_analyzer.py, offline
-         keyword matching against data/pci_dss_data.json), selected via
-         `analysis_mode` ("ai" or "local"). Both return the same schema.
-      5. Persist evidence + every returned assessment, tagged with which
-         engine produced it (this is where cross-requirement spanning
-         actually gets recorded)
+         keyword/vocabulary matching against data/pci_dss_data.json, with
+         weights read from Settings), selected via `analysis_mode` ("ai"
+         or "local"). Both return the same schema.
+      7. Persist evidence (its text excerpt encrypted too) + every returned
+         assessment, tagged with which engine produced it (this is where
+         cross-requirement spanning actually gets recorded)
 
     Returns the parsed analyzer response dict, plus 'analysis_mode'.
     """
@@ -109,7 +138,12 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
             f"{MAX_EVIDENCE_FILE_BYTES // (1024*1024)} MB limit for evidence uploads."
         )
 
-    stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+    # Microsecond precision alone still isn't a hard uniqueness guarantee on
+    # every filesystem/clock, so a short random suffix is added too — two
+    # uploads landing on an identical stored filename would let the second
+    # one silently overwrite the first (and, worse, a later duplicate-cleanup
+    # delete would then remove both instead of just the intended copy).
+    stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S%f") + "_" + secrets.token_hex(4)
     stored_name = _safe_stored_filename(original_filename, stamp)
     stored_path = os.path.join(EVIDENCE_STORE, stored_name)
 
@@ -121,19 +155,29 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
     shutil.copyfile(source_filepath, stored_path)
     file_hash = _sha256_of_file(stored_path)
 
+    if not allow_duplicate:
+        existing = db.find_evidence_by_hash(file_hash)
+        if existing:
+            os.remove(stored_path)  # don't leave an unused plaintext copy behind
+            raise DuplicateEvidenceError(existing["id"], existing["filename"], existing["uploaded_at"])
+
     evidence_type = ep.detect_evidence_type(original_filename)
-    text = ep.extract_text(stored_path)
+    text = ep.extract_text(stored_path)  # extracted while stored_path is still plaintext
+
+    sec.encrypt_file_in_place(stored_path)  # from here on, stored_path is ciphertext at rest
 
     pci_data = load_pci_data()
     prior_context = _build_prior_context(target_sub_requirement)
 
     if analysis_mode == "local":
+        weights = db.get_settings_json("local_engine_weights", default={}) or {}
         result = la.analyze_evidence(
             evidence_text=text,
             pci_data=pci_data,
             target_sub_requirement=target_sub_requirement,
             prior_context=prior_context,
             filename=original_filename,
+            weights=weights,
         )
     else:
         result = ai.analyze_evidence(
@@ -150,6 +194,7 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
         target_sub_requirement=target_sub_requirement,
         raw_text_excerpt=text,
         sha256=file_hash,
+        encrypt=True,
     )
 
     for a in result["assessments"]:

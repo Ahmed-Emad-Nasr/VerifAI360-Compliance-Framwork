@@ -41,6 +41,7 @@ only displays what `src/` returns).
 import os
 import tempfile
 import datetime
+import json
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -55,10 +56,13 @@ from src import risk_engine as re_
 from src import report_generator as rg
 from src import ai_analyzer as ai
 from src import scoping_data as sd
+from src import local_analyzer as la
 from src.ai_analyzer import AIAnalyzerError
 from src.local_analyzer import LocalAnalyzerError
 from src.evidence_processor import EvidenceExtractionError
-from src.compliance_engine import EvidenceUploadError
+from src.compliance_engine import EvidenceUploadError, DuplicateEvidenceError
+from src import security as sec
+from src import data_portability as dp
 
 st.set_page_config(page_title="VerifAI 360 — PCI DSS Compliance", page_icon="🛡️", layout="wide")
 db.init_db()
@@ -288,10 +292,115 @@ st.markdown(
     ::-webkit-scrollbar-thumb:hover { background: var(--vf-accent-dim); }
 
     hr { border-color: var(--vf-border-soft) !important; }
+
+    /* ---- Extra cyberpunk/cyber-SOC touches ---- */
+
+    /* corner brackets on metrics + expander cards, like a HUD targeting reticle */
+    [data-testid="stMetric"], div[data-testid="stExpander"], .vf-hud-card {
+        position: relative;
+    }
+    [data-testid="stMetric"]::before, [data-testid="stMetric"]::after,
+    div[data-testid="stExpander"]::before, div[data-testid="stExpander"]::after {
+        content: ""; position: absolute; width: 10px; height: 10px;
+        border-color: var(--vf-accent); opacity: 0.65; pointer-events: none;
+    }
+    [data-testid="stMetric"]::before, div[data-testid="stExpander"]::before {
+        top: -1px; left: -1px; border-top: 2px solid; border-left: 2px solid;
+    }
+    [data-testid="stMetric"]::after, div[data-testid="stExpander"]::after {
+        bottom: -1px; right: -1px; border-bottom: 2px solid; border-right: 2px solid;
+    }
+
+    /* glitch flicker on the sidebar brand title, subtle and occasional (not annoying) */
+    @keyframes vf-glitch {
+        0%, 92%, 100% { text-shadow: 0 0 18px rgba(53,208,192,0.25); transform: translate(0,0); }
+        93% { text-shadow: -2px 0 var(--vf-red), 2px 0 var(--vf-accent-2); transform: translate(-1px,0); }
+        94% { text-shadow: 2px 0 var(--vf-red), -2px 0 var(--vf-accent-2); transform: translate(1px,0); }
+        95% { text-shadow: 0 0 18px rgba(53,208,192,0.25); transform: translate(0,0); }
+    }
+    .vf-brand-title { animation: vf-glitch 7s infinite; }
+
+    /* small system-status ticker footer in the sidebar */
+    .vf-status-ticker {
+        display: flex; align-items: center; gap: 6px; font-family: var(--vf-mono);
+        font-size: 0.72rem; color: var(--vf-muted); padding: 8px 2px 2px 2px;
+    }
+    .vf-status-dot {
+        width: 7px; height: 7px; border-radius: 50%; background: var(--vf-green);
+        box-shadow: 0 0 6px var(--vf-green); animation: vf-pulse 2s ease-in-out infinite;
+    }
+    .vf-status-dot.vf-status-dim { background: var(--vf-muted); box-shadow: none; animation: none; }
+    @keyframes vf-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+    /* encrypted / secure badge, used near evidence & security indicators */
+    .vf-secure-badge {
+        display: inline-flex; align-items: center; gap: 5px;
+        font-family: var(--vf-mono); font-size: 0.72rem; font-weight: 600;
+        color: #71e6ab; background: rgba(62,207,142,0.1); border: 1px solid rgba(62,207,142,0.35);
+        border-radius: 4px; padding: 2px 9px;
+    }
+
+    /* pulsing ring on critical-severity badges specifically, extra urgency cue */
+    .vf-badge-critical { animation: vf-critical-pulse 1.8s ease-in-out infinite; }
+    @keyframes vf-critical-pulse {
+        0%, 100% { box-shadow: 0 0 10px -3px rgba(255,77,94,0.6); }
+        50% { box-shadow: 0 0 16px 0px rgba(255,77,94,0.9); }
+    }
+
+    /* reviewer / read-only mode banner */
+    .vf-readonly-banner {
+        background: rgba(224,167,46,0.08); border: 1px solid rgba(224,167,46,0.35);
+        border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;
+        font-family: var(--vf-mono); font-size: 0.82rem; color: #f0c15e;
+        display: flex; align-items: center; gap: 8px;
+    }
+
+    /* login screen container */
+    .vf-login-wrap {
+        max-width: 420px; margin: 8vh auto 0 auto; text-align: center;
+    }
+    .vf-login-wrap .vf-icon-big {
+        font-size: 3rem; margin-bottom: 6px;
+        filter: drop-shadow(0 0 18px rgba(53,208,192,0.5));
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+# ----------------------------------------------------------------------------
+# App-level passcode gate (see src/security.py for the full design rationale).
+# One shared passcode, entered once per browser session, required before any
+# page renders. If APP_PASSCODE was never configured, one is auto-generated
+# and written to .env on first run — auth is never silently disabled.
+# ----------------------------------------------------------------------------
+if not st.session_state.get("authenticated", False):
+    sec.get_or_create_passcode()  # auto-generates + persists to .env on first run if missing
+    st.markdown('<div class="vf-login-wrap">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="vf-icon-big">🛡️</div>'
+        '<h1 style="font-family:\'Space Grotesk\',sans-serif;margin-bottom:0;">VerifAI 360</h1>'
+        '<p style="color:var(--vf-muted);font-family:var(--vf-mono);font-size:0.85rem;">'
+        'RESTRICTED ACCESS — ENTER PASSCODE TO CONTINUE</p>',
+        unsafe_allow_html=True,
+    )
+    entered = st.text_input("Passcode", type="password", label_visibility="collapsed",
+                             placeholder="Enter passcode")
+    if st.button("🔓 Unlock", type="primary", width='stretch'):
+        if sec.check_passcode(entered):
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect passcode.")
+    with st.expander("First time here? / أول مرة تفتح التطبيق؟"):
+        st.caption(
+            "No passcode was configured, so one was generated automatically and saved to your "
+            "`.env` file as `APP_PASSCODE`. Open that file to find it, or set your own value there "
+            "and restart the app. Anyone with this passcode can see and edit all data in this app — "
+            "share it only with people who should have that access."
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
 
 
 def page_header(icon: str, title: str, subtitle: str = "", about: str = ""):
@@ -334,19 +443,52 @@ def demo_banner(text: str):
 # ----------------------------------------------------------------------------
 # Sidebar navigation
 # ----------------------------------------------------------------------------
+LANG = st.session_state.get("lang", "en")
+
+
+def t(en: str, ar: str) -> str:
+    """Tiny translation helper — returns the Arabic string when the sidebar
+    language toggle is set to Arabic, English otherwise. Currently covers
+    navigation labels, page titles/subtitles, and the sidebar chrome — the
+    highest-traffic strings for walking someone through a demo. Full-page
+    body text (About boxes, form fields) stays English-only for now."""
+    return ar if LANG == "ar" else en
+
+
 st.sidebar.markdown(
     """
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:2px;">
         <span style="font-size:1.6rem;">🛡️</span>
-        <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.25rem;color:#e7ecf5;">
-            VerifAI 360
+        <span class="vf-brand-title" style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.25rem;color:#e7ecf5;">
+            VerifAI 360<span class="vf-brand-cursor"></span>
         </span>
     </div>
     """,
     unsafe_allow_html=True,
 )
-st.sidebar.caption("AI-driven PCI DSS self-assessment")
-st.sidebar.markdown('<div class="vf-nav-caption">Workspace</div>', unsafe_allow_html=True)
+st.sidebar.caption(t("AI-driven PCI DSS self-assessment", "تقييم ذاتي لمعيار PCI DSS مدعوم بالذكاء الاصطناعي"))
+
+lang_col, review_col = st.sidebar.columns(2)
+with lang_col:
+    if st.button("🇬🇧 EN" if LANG == "ar" else "🇪🇬 AR", key="_lang_toggle", width='stretch'):
+        st.session_state["lang"] = "en" if LANG == "ar" else "ar"
+        st.rerun()
+with review_col:
+    reviewer_mode = st.toggle("🔒 " + t("Reviewer", "مراجعة فقط"), key="reviewer_mode",
+                               help=t(
+                                   "Read-only mode: hides/disables every button that adds, edits, "
+                                   "deletes, or analyzes data. Safe to hand this session to someone "
+                                   "you're demoing the app to.",
+                                   "وضع القراءة فقط: بيعطّل كل زرار بيضيف أو يعدّل أو يحلل بيانات — "
+                                   "مناسب لما تسيب حد يتصفح التطبيق من غير ما يقدر يغيّر حاجة."
+                               ))
+if reviewer_mode:
+    st.sidebar.markdown(
+        f'<div class="vf-readonly-banner">🔒 {t("Reviewer mode is ON — editing disabled", "وضع المراجعة شغّال — التعديل متوقف")}</div>',
+        unsafe_allow_html=True,
+    )
+
+st.sidebar.markdown(f'<div class="vf-nav-caption">{t("Workspace", "مساحة العمل")}</div>', unsafe_allow_html=True)
 
 
 def _activate_core():
@@ -357,26 +499,51 @@ def _activate_demo():
     st.session_state["_active_page"] = st.session_state["_demo_radio"]
 
 
+def _activate_settings():
+    st.session_state["_active_page"] = st.session_state["_settings_radio"]
+
+
+_tt_counts = ce.testing_tracker_summary()
+_overdue_suffix = f" ({_tt_counts['Overdue']} overdue)" if _tt_counts["Overdue"] else ""
+
+_core_labels_en = [
+    "🎯 SAQ Scoping",
+    "📤 Upload & Analyze",
+    "📊 Compliance Dashboard",
+    "🗺️ CDE Scope",
+    "🛡️ Compensating Controls",
+    f"🧪 Testing Tracker (Req 11){_overdue_suffix}",
+    "🤝 Vendor / TPSP Register",
+    "⚠️ Identified Risks",
+    "🕳️ Gap Report",
+    "📚 Requirement Explorer",
+    "🗂️ Evidence Log",
+]
+_core_labels_ar = [
+    "🎯 نطاق SAQ",
+    "📤 رفع وتحليل الأدلة",
+    "📊 لوحة الامتثال",
+    "🗺️ نطاق CDE",
+    "🛡️ الضوابط التعويضية",
+    f"🧪 متابعة الاختبارات (متطلب 11){_overdue_suffix}",
+    "🤝 سجل الموردين",
+    "⚠️ المخاطر المرصودة",
+    "🕳️ تقرير الفجوات",
+    "📚 دليل متطلبات PCI DSS",
+    "🗂️ سجل الأدلة",
+]
+_core_labels = _core_labels_ar if LANG == "ar" else _core_labels_en
+_core_id_by_label = dict(zip(_core_labels, _core_labels_en))  # map back to the stable English id
+
 core_page = st.sidebar.radio(
-    "Navigate",
-    [
-        "🎯 SAQ Scoping",
-        "📤 Upload & Analyze",
-        "📊 Compliance Dashboard",
-        "🗺️ CDE Scope",
-        "🛡️ Compensating Controls",
-        "🧪 Testing Tracker (Req 11)",
-        "🤝 Vendor / TPSP Register",
-        "⚠️ Identified Risks",
-        "🕳️ Gap Report",
-        "📚 Requirement Explorer",
-        "🗂️ Evidence Log",
-    ],
-    label_visibility="collapsed",
-    key="_core_radio",
-    on_change=_activate_core,
+    "Navigate", _core_labels, label_visibility="collapsed", key="_core_radio", on_change=_activate_core,
 )
-st.sidebar.markdown('<div class="vf-nav-caption">Roadmap · Demo</div>', unsafe_allow_html=True)
+st.sidebar.markdown(f'<div class="vf-nav-caption">{t("Settings", "الإعدادات")}</div>', unsafe_allow_html=True)
+settings_page = st.sidebar.radio(
+    "Settings", ["⚙️ Settings & Security"], label_visibility="collapsed",
+    index=None, key="_settings_radio", on_change=_activate_settings,
+)
+st.sidebar.markdown(f'<div class="vf-nav-caption">{t("Roadmap · Demo", "خارطة الطريق · تجريبي")}</div>', unsafe_allow_html=True)
 demo_page = st.sidebar.radio(
     "Demo pages",
     [
@@ -395,15 +562,23 @@ demo_page = st.sidebar.radio(
 if "_active_page" not in st.session_state:
     st.session_state["_active_page"] = core_page
 page_raw = st.session_state["_active_page"]
+# Translate an Arabic-selected core label back to its stable English id
+# before stripping the emoji, so the rest of the app's page-matching logic
+# (which all compares against English strings) doesn't need to know about i18n.
+page_raw = _core_id_by_label.get(page_raw, page_raw)
 # Strip the leading emoji + space for internal page-matching logic below.
 page = page_raw.split(" ", 1)[1] if page_raw and " " in page_raw else page_raw
+# Testing Tracker's label carries a dynamic "(N overdue)" suffix — strip it
+# back to the stable page id too.
+if page.startswith("Testing Tracker (Req 11)"):
+    page = "Testing Tracker (Req 11)"
 
 st.sidebar.divider()
 _n_keys = ai.get_key_count()
 if _n_keys == 0:
     st.sidebar.warning(
         "GOOGLE_API_KEY is not set. Get a free key at aistudio.google.com/apikey "
-        "and set it in a `.env` file to enable AI analysis."
+        "and set it in a `.env` file to enable AI analysis. The Local engine works with no key."
     )
 elif _n_keys == 1:
     st.sidebar.markdown(
@@ -421,10 +596,25 @@ else:
         f'🟢 {_n_keys} Gemini API keys detected — automatic failover enabled</div>',
         unsafe_allow_html=True,
     )
-if st.sidebar.button("⚠️ Reset all demo data"):
+if st.sidebar.button("⚠️ Reset all demo data", disabled=reviewer_mode):
     db.reset_all()
     st.sidebar.success("All evidence, scores, and risks cleared.")
     st.rerun()
+
+st.sidebar.markdown(
+    f"""
+    <div class="vf-status-ticker">
+        <span class="vf-status-dot"></span> SYSTEM ONLINE
+        <span style="margin-left:auto;">🔒 ENCRYPTED</span>
+    </div>
+    <div class="vf-status-ticker">
+        <span class="vf-status-dot {'vf-status-dim' if not reviewer_mode else ''}"></span>
+        {'READ-ONLY' if reviewer_mode else 'READ/WRITE'}
+        <span style="margin-left:auto;">v1.1</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 pci_data = ce.load_pci_data()
 
@@ -456,135 +646,213 @@ def requirement_id_for_sub(sub_id):
 # src/compliance_engine.process_uploaded_evidence().
 # ----------------------------------------------------------------------------
 if page == "Upload & Analyze":
-    page_header("📤", "Upload evidence for AI assessment",
+    page_header("📤", t("Upload evidence for AI assessment", "رفع الأدلة للتقييم"),
                 "Sufficiency scoring, cross-requirement mapping, and gap detection in one pass",
                 about=(
-                    "**This is the front door of the app.** You upload one artifact — a policy doc, "
-                    "a config screenshot, a scan report, anything — and optionally tell it which PCI DSS "
-                    "sub-requirement it's meant to prove.\n\n"
+                    "**This is the front door of the app.** You upload one or more artifacts — a "
+                    "policy doc, a config screenshot, a scan report, anything — and optionally tell "
+                    "it which PCI DSS sub-requirement it's meant to prove.\n\n"
                     "**Two analysis engines, your choice:** the **AI engine** sends the extracted text "
                     "to Google Gemini for a semantic read — best accuracy, needs an API key and network "
                     "access. The **Local engine** scores it against four fully offline signals mined "
-                    "from `data/pci_dss_data.json` and the filename itself — curated evidence keywords, "
-                    "the sub-requirement's title/summary vocabulary, its example-evidence vocabulary, "
-                    "and a small filename cross-check — free, deterministic, and nothing leaves your "
-                    "machine, at the cost of not understanding paraphrased or novel wording the way an "
-                    "LLM can.\n\n"
+                    "from `data/pci_dss_data.json` and the filename itself — curated evidence keywords "
+                    "(with typo-tolerant fuzzy matching), title/summary vocabulary, example-evidence "
+                    "vocabulary, and a filename cross-check, all weighted per **Settings → Local Engine** "
+                    "— free, deterministic, and nothing leaves your machine, at the cost of not "
+                    "understanding paraphrased or novel wording the way an LLM can. You can also run "
+                    "**both engines side by side** on the same file to compare them directly.\n\n"
                     "**Either way you get:** a 0–100 sufficiency score, a maturity label, gaps, and "
-                    "recommendations — sometimes mapping one file to *several* sub-requirements at once.\n\n"
+                    "recommendations — sometimes mapping one file to *several* sub-requirements at once. "
+                    "Re-uploading a file you've already submitted (same bytes, detected via SHA-256) "
+                    "is flagged before it's re-analyzed, so you don't burn a second AI call by accident.\n\n"
                     "**Why it exists:** manually cross-checking each piece of evidence against 12 "
                     "requirements and dozens of sub-requirements is the slowest part of a real PCI DSS "
                     "self-assessment. This page automates that first read so a human only needs to "
                     "review and confirm, not start from a blank page."
                 ))
     st.write(
-        "Upload a policy document, configuration screenshot, scan report, or similar artifact. "
-        "The selected engine will assess its **sufficiency**, assign a **compliance/maturity score**, "
-        "check whether it also **spans other sub-requirements**, and generate **gap-remediation "
+        "Upload one or more policy documents, configuration screenshots, scan reports, or similar "
+        "artifacts. The selected engine(s) will assess **sufficiency**, assign a **compliance/"
+        "maturity score**, check for **cross-requirement spanning**, and generate **gap-remediation "
         "recommendations**."
     )
 
     n_keys = ai.get_key_count()
-    engine_choice = st.radio(
-        "Analysis engine",
-        ["🤖 AI-powered (Gemini)", "🧩 Local rule-based (offline, no API needed)"],
-        horizontal=True,
-        index=0 if n_keys > 0 else 1,
-        help=(
-            "AI engine: deeper, context-aware read via Google Gemini — needs GOOGLE_API_KEY and "
-            "network access. Local engine: instant, offline keyword-coverage scoring against the "
-            "bundled PCI DSS catalog — no API key, no network call, no data leaves this machine."
-        ),
+    compare_mode = st.checkbox(
+        "🔬 Compare AI vs Local side by side (single file only)",
+        help="Runs both engines on the same file and shows their results next to each other — useful "
+             "for sanity-checking the Local engine's scores against the AI's deeper read.",
     )
-    analysis_mode = "local" if engine_choice.startswith("🧩") else "ai"
-    if analysis_mode == "ai" and n_keys == 0:
-        st.warning(
-            "No Gemini API key detected — the AI engine will fail. Switch to **Local rule-based** "
-            "above, or add `GOOGLE_API_KEY` to your `.env` file."
+
+    if compare_mode:
+        analysis_mode = None
+        if n_keys == 0:
+            st.warning("Compare mode needs a Gemini API key for the AI half — add `GOOGLE_API_KEY` "
+                       "to your `.env`, or turn off Compare mode to use the Local engine alone.")
+    else:
+        engine_choice = st.radio(
+            "Analysis engine",
+            ["🤖 AI-powered (Gemini)", "🧩 Local rule-based (offline, no API needed)"],
+            horizontal=True,
+            index=0 if n_keys > 0 else 1,
+            help=(
+                "AI engine: deeper, context-aware read via Google Gemini — needs GOOGLE_API_KEY and "
+                "network access. Local engine: instant, offline multi-signal scoring against the "
+                "bundled PCI DSS catalog — no API key, no network call, no data leaves this machine."
+            ),
         )
-    elif analysis_mode == "local":
-        st.caption(
-            "🧩 Local engine selected — scoring is keyword-coverage based (transparent, but less "
-            "nuanced than the AI read). Good for a fast first pass or when working offline."
-        )
+        analysis_mode = "local" if engine_choice.startswith("🧩") else "ai"
+        if analysis_mode == "ai" and n_keys == 0:
+            st.warning(
+                "No Gemini API key detected — the AI engine will fail. Switch to **Local rule-based** "
+                "above, or add `GOOGLE_API_KEY` to your `.env` file."
+            )
+        elif analysis_mode == "local":
+            st.caption(
+                "🧩 Local engine selected — scoring is multi-signal keyword/vocabulary based "
+                "(transparent, tunable in Settings, but less nuanced than the AI read). Good for a "
+                "fast first pass or when working offline."
+            )
 
     opts, id_map = sub_req_options()
     col1, col2 = st.columns([2, 1])
     with col1:
-        uploaded = st.file_uploader(
-            "Evidence file",
+        uploaded_files = st.file_uploader(
+            "Evidence file(s)",
             type=["txt", "log", "csv", "json", "md", "conf", "cfg", "yaml", "yml",
                   "pdf", "docx", "png", "jpg", "jpeg", "bmp", "tiff"],
+            accept_multiple_files=True,
+            disabled=reviewer_mode,
         )
     with col2:
         target_label = st.selectbox("Primary target sub-requirement (optional)", opts)
         target_id = id_map.get(target_label)
 
-    if uploaded and st.button("🔍 Analyze evidence", type="primary"):
-        spinner_text = (
-            "Extracting evidence and running AI compliance analysis..."
-            if analysis_mode == "ai" else
-            "Extracting evidence and running local keyword-coverage analysis..."
-        )
-        with st.spinner(spinner_text):
-            try:
-                suffix = os.path.splitext(uploaded.name)[1]
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(uploaded.getbuffer())
-                    tmp_path = tmp.name
+    if compare_mode and uploaded_files and len(uploaded_files) > 1:
+        st.warning("Compare mode only processes the **first** file when multiple are selected.")
+        uploaded_files = uploaded_files[:1]
 
-                result = ce.process_uploaded_evidence(tmp_path, uploaded.name, target_id,
-                                                        analysis_mode=analysis_mode)
-                os.unlink(tmp_path)
-            except EvidenceUploadError as e:
-                st.error(f"Upload rejected: {e}")
-                st.stop()
-            except EvidenceExtractionError as e:
-                st.error(f"Could not read this file: {e}")
-                st.stop()
-            except AIAnalyzerError as e:
-                st.error(f"AI analysis failed: {e}")
-                st.stop()
-            except LocalAnalyzerError as e:
-                st.error(f"Local analysis failed: {e}")
-                st.stop()
 
+    def _run_one_engine(tmp_path, filename, mode, allow_dup):
+        """Runs process_uploaded_evidence for one file+engine, translating every known exception into
+        a (result, error_message, duplicate_error) tuple instead of raising, so the caller can render
+        results for whichever files/engines succeeded even if others in the same batch failed."""
+        try:
+            result = ce.process_uploaded_evidence(tmp_path, filename, target_id,
+                                                    analysis_mode=mode, allow_duplicate=allow_dup)
+            return result, None, None
+        except DuplicateEvidenceError as e:
+            return None, None, e
+        except EvidenceUploadError as e:
+            return None, f"Upload rejected: {e}", None
+        except EvidenceExtractionError as e:
+            return None, f"Could not read this file: {e}", None
+        except AIAnalyzerError as e:
+            return None, f"AI analysis failed: {e}", None
+        except LocalAnalyzerError as e:
+            return None, f"Local analysis failed: {e}", None
+
+
+    def _render_assessments(result):
         engine_label = ce.ANALYSIS_ENGINES.get(result.get("analysis_mode"), "")
-        st.success(
-            f"Analysis complete via **{engine_label}** — evidence recognized as: "
-            f"**{result['evidence_type']}**"
-        )
+        st.success(f"Analysis complete via **{engine_label}** — evidence recognized as: "
+                   f"**{result['evidence_type']}**")
         st.info(result.get("evidence_summary", ""))
-
         assessments = sorted(result["assessments"], key=lambda a: -a["sufficiency_score"])
         if not assessments:
             st.warning("No relevant PCI DSS sub-requirement was found for this evidence in the catalog.")
-        else:
-            st.subheader(f"Mapped to {len(assessments)} sub-requirement(s)")
-            if len(assessments) > 1:
-                st.caption(
-                    "✨ Cross-requirement spanning detected: this single piece of evidence "
-                    "contributes to more than one sub-requirement."
-                )
-            for a in assessments:
-                is_primary = a["sub_requirement_id"] == target_id
-                title_prefix = "🎯 " if is_primary else "🔗 "
-                with st.expander(
-                    f"{title_prefix}{a['sub_requirement_id']} — score {a['sufficiency_score']}/100 "
-                    f"({a['maturity_level']})",
-                    expanded=is_primary,
-                ):
-                    st.progress(a["sufficiency_score"] / 100)
-                    st.write(a["rationale"])
-                    if a["gaps"]:
-                        st.markdown("**Gaps identified:**")
-                        for g in a["gaps"]:
-                            st.markdown(f"- {g}")
-                    if a["recommendations"]:
-                        st.markdown("**Recommendations:**")
-                        for r in a["recommendations"]:
-                            st.markdown(f"- {r}")
+            return
+        st.caption(f"Mapped to {len(assessments)} sub-requirement(s)"
+                   + (" — ✨ cross-requirement spanning detected" if len(assessments) > 1 else ""))
+        for a in assessments:
+            is_primary = a["sub_requirement_id"] == target_id
+            title_prefix = "🎯 " if is_primary else "🔗 "
+            with st.expander(
+                f"{title_prefix}{a['sub_requirement_id']} — score {a['sufficiency_score']}/100 "
+                f"({a['maturity_level']})",
+                expanded=is_primary,
+            ):
+                st.progress(a["sufficiency_score"] / 100)
+                st.write(a["rationale"])
+                if a["gaps"]:
+                    st.markdown("**Gaps identified:**")
+                    for g in a["gaps"]:
+                        st.markdown(f"- {g}")
+                if a["recommendations"]:
+                    st.markdown("**Recommendations:**")
+                    for r in a["recommendations"]:
+                        st.markdown(f"- {r}")
 
+
+    if uploaded_files and st.button("🔍 Analyze evidence", type="primary", disabled=reviewer_mode):
+        any_success = False
+        for uploaded in uploaded_files:
+            suffix = os.path.splitext(uploaded.name)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(uploaded.getbuffer())
+                tmp_path = tmp.name
+            file_hash = ce.sha256_of_file(tmp_path)
+            allow_dup = st.session_state.get(f"_allow_dup_{file_hash}", False)
+
+            st.divider()
+            st.markdown(f"#### 📄 {uploaded.name}")
+
+            if compare_mode:
+                spinner_text = "Running both engines..."
+                with st.spinner(spinner_text):
+                    r_ai, err_ai, dup_ai = _run_one_engine(tmp_path, uploaded.name, "ai", allow_dup)
+                    r_local, err_local, dup_local = (None, None, None)
+                    dup = dup_ai or dup_local
+                    if not dup and (r_ai or not err_ai):
+                        # Only run the second engine (and its own duplicate check) if the first
+                        # didn't already hit a duplicate — avoids double-flagging the same file.
+                        r_local, err_local, dup_local = _run_one_engine(tmp_path, uploaded.name, "local", True)
+                if dup_ai:
+                    st.warning(f"⚠️ {dup_ai} Analyze anyway?")
+                    if st.button("Analyze anyway", key=f"dup_{file_hash}", disabled=reviewer_mode):
+                        st.session_state[f"_allow_dup_{file_hash}"] = True
+                        st.rerun()
+                else:
+                    ccol1, ccol2 = st.columns(2)
+                    with ccol1:
+                        st.markdown("**🤖 AI (Gemini)**")
+                        if err_ai:
+                            st.error(err_ai)
+                        elif r_ai:
+                            _render_assessments(r_ai)
+                            any_success = True
+                    with ccol2:
+                        st.markdown("**🧩 Local (offline)**")
+                        if err_local:
+                            st.error(err_local)
+                        elif r_local:
+                            _render_assessments(r_local)
+                            any_success = True
+            else:
+                spinner_text = (
+                    "Extracting evidence and running AI compliance analysis..."
+                    if analysis_mode == "ai" else
+                    "Extracting evidence and running local multi-signal analysis..."
+                )
+                with st.spinner(spinner_text):
+                    result, err, dup = _run_one_engine(tmp_path, uploaded.name, analysis_mode, allow_dup)
+                if dup:
+                    st.warning(f"⚠️ {dup}")
+                    if st.button("Analyze anyway", key=f"dup_{file_hash}", disabled=reviewer_mode):
+                        st.session_state[f"_allow_dup_{file_hash}"] = True
+                        st.rerun()
+                elif err:
+                    st.error(err)
+                elif result:
+                    _render_assessments(result)
+                    any_success = True
+
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        if any_success:
             st.divider()
             st.caption(
                 "💡 Head to **Identified Risks** and click *Sync risks from gap report* to turn any "
@@ -602,7 +870,9 @@ if page == "Upload & Analyze":
 # compliance_engine / risk_engine for numbers and draws them with Plotly.
 # ----------------------------------------------------------------------------
 elif page == "Compliance Dashboard":
-    page_header("📊", "Compliance Dashboard", "Overall PCI DSS posture, scoped to your selected SAQ type",
+    page_header("📊", t("Compliance Dashboard", "لوحة الامتثال"),
+                t("Overall PCI DSS posture, scoped to your selected SAQ type",
+                  "الوضع العام للامتثال، محدد حسب نوع SAQ المختار"),
                 about=(
                     "**This is the big-picture page.** It takes every score stored so far and rolls it "
                     "up into one overall compliance percentage, plus a percentage per top-level "
@@ -627,6 +897,16 @@ elif page == "Compliance Dashboard":
             f"Scoped to **{saq_def['label']}** — in-scope requirements: "
             f"{', '.join(summary['in_scope_requirement_ids'])}. Change this on the **SAQ Scoping** page."
         )
+
+    st.download_button(
+        "📄 Executive summary (1-page PDF)",
+        rg.generate_executive_summary_pdf(),
+        file_name=f"verifai360_executive_summary_{datetime.date.today().isoformat()}.pdf",
+        mime="application/pdf",
+        help="A short, manager-facing PDF: headline %, SAQ scope, and per-requirement breakdown — "
+             "no detailed evidence/vendor/testing tables. For the full audit trail, use "
+             "'Generate audit PDF' on the QSA Audit View page.",
+    )
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Overall PCI DSS compliance", f"{summary['overall_pct']}%")
@@ -789,7 +1069,7 @@ elif page == "Compliance Dashboard":
 # needs to satisfy.
 # ----------------------------------------------------------------------------
 elif page == "SAQ Scoping":
-    page_header("🎯", "SAQ Type Selection & Scoping",
+    page_header("🎯", t("SAQ Type Selection & Scoping", "اختيار نوع ونطاق SAQ"),
                 "Pick the SAQ type that matches how you handle cardholder data — this determines "
                 "which of the 12 requirements are actually in scope",
                 about=(
@@ -830,7 +1110,7 @@ elif page == "SAQ Scoping":
     if not_applicable:
         st.markdown("**Not applicable for this SAQ type:** " + ", ".join(f"Req {i}" for i in not_applicable))
 
-    if st.button("💾 Save SAQ type", type="primary"):
+    if st.button("💾 Save SAQ type", type="primary", disabled=reviewer_mode):
         ce.set_current_saq_type(chosen)
         st.success(f"SAQ type set to {saq_def['label']}. The Compliance Dashboard and PDF report now "
                    f"reflect this scope.")
@@ -854,7 +1134,7 @@ elif page == "SAQ Scoping":
 # or scoring is involved, it just records what the user tells it.
 # ----------------------------------------------------------------------------
 elif page == "CDE Scope":
-    page_header("🗺️", "Cardholder Data Environment (CDE) Scope",
+    page_header("🗺️", t("Cardholder Data Environment (CDE) Scope", "نطاق بيئة بيانات حاملي البطاقات (CDE)"),
                 "Document what's in scope, what's out of scope, and what's connected-to/security-"
                 "impacting the CDE",
                 about=(
@@ -887,7 +1167,7 @@ elif page == "CDE Scope":
                 ) == "Yes"
             description = st.text_area("Description")
             flow_notes = st.text_area("Data flow notes (how cardholder data enters/exits/moves through this system)")
-            submitted = st.form_submit_button("Add system")
+            submitted = st.form_submit_button("Add system", disabled=reviewer_mode)
             if submitted:
                 if not sys_name.strip():
                     st.error("System / component name is required.")
@@ -919,7 +1199,7 @@ elif page == "CDE Scope":
                            f"Connected-to/impacting: {'Yes' if it['connected_to_cde'] else 'No'}")
                 bcol1, bcol2 = st.columns([1, 5])
                 with bcol1:
-                    if st.button("🗑️ Delete", key=f"del_cde_{it['id']}"):
+                    if st.button("🗑️ Delete", key=f"del_cde_{it['id']}", disabled=reviewer_mode):
                         db.delete_cde_system(it["id"])
                         st.rerun()
 
@@ -944,7 +1224,7 @@ elif page == "CDE Scope":
 # goal, and who signed off on it. Again, pure record-keeping — no AI here.
 # ----------------------------------------------------------------------------
 elif page == "Compensating Controls":
-    page_header("🛡️", "Compensating Controls Worksheet",
+    page_header("🛡️", t("Compensating Controls Worksheet", "ورقة عمل الضوابط التعويضية"),
                 "Document an alternative control when a standard requirement can't be implemented as written",
                 about=(
                     "**Sometimes a company can't implement a control exactly as PCI DSS describes it,** "
@@ -979,7 +1259,7 @@ elif page == "Compensating Controls":
             with vc3:
                 next_review = st.date_input("Next review date", value=None)
             status = st.selectbox("Status", ["Draft", "Approved", "Expired", "Retired"])
-            submitted = st.form_submit_button("Add compensating control")
+            submitted = st.form_submit_button("Add compensating control", disabled=reviewer_mode)
             if submitted:
                 sub_id = id_map.get(sub_label)
                 if not sub_id:
@@ -1023,7 +1303,7 @@ elif page == "Compensating Controls":
                 )
                 bcol1, bcol2 = st.columns([1, 5])
                 with bcol1:
-                    if st.button("🗑️ Delete", key=f"del_cc_{it['id']}"):
+                    if st.button("🗑️ Delete", key=f"del_cc_{it['id']}", disabled=reviewer_mode):
                         db.delete_compensating_control(it["id"])
                         st.rerun()
 
@@ -1038,7 +1318,7 @@ elif page == "Compensating Controls":
 # the next one is "On track", "Due soon", or "Overdue".
 # ----------------------------------------------------------------------------
 elif page == "Testing Tracker (Req 11)":
-    page_header("🧪", "Recurring Testing Tracker",
+    page_header("🧪", t("Recurring Testing Tracker", "متابعة الاختبارات الدورية"),
                 "Requirement 11: ASV quarterly external scans, internal scans, annual penetration "
                 "tests, and segmentation testing — with due dates, not one-time evidence",
                 about=(
@@ -1080,7 +1360,7 @@ elif page == "Testing Tracker (Req 11)":
                 help="Auto-suggested from last performed + frequency where possible; override as needed.",
             )
             result_summary = st.text_area("Result summary")
-            submitted = st.form_submit_button("Add test")
+            submitted = st.form_submit_button("Add test", disabled=reviewer_mode)
             if submitted:
                 if not next_due:
                     st.error("Next due date is required.")
@@ -1124,7 +1404,7 @@ elif page == "Testing Tracker (Req 11)":
                 )
                 bc1, bc2, bc3 = st.columns([1, 1, 4])
                 with bc1:
-                    if st.button("💾 Save", key=f"save_test_{it['id']}"):
+                    if st.button("💾 Save", key=f"save_test_{it['id']}", disabled=reviewer_mode):
                         db.update_test_item(
                             it["id"],
                             last_performed_date=str(new_last) if new_last else it.get("last_performed_date"),
@@ -1133,7 +1413,7 @@ elif page == "Testing Tracker (Req 11)":
                         st.success("Updated.")
                         st.rerun()
                 with bc2:
-                    if st.button("🗑️ Delete", key=f"del_test_{it['id']}"):
+                    if st.button("🗑️ Delete", key=f"del_test_{it['id']}", disabled=reviewer_mode):
                         db.delete_test_item(it["id"])
                         st.rerun()
 
@@ -1158,7 +1438,7 @@ elif page == "Testing Tracker (Req 11)":
 # current. No AI or scoring involved — just structured record-keeping.
 # ----------------------------------------------------------------------------
 elif page == "Vendor / TPSP Register":
-    page_header("🤝", "Vendor / TPSP Management Register",
+    page_header("🤝", t("Vendor / TPSP Management Register", "سجل إدارة الموردين وأطراف الخدمة"),
                 "Requirements 12.8 & 12.9 — third-party service providers, tracked separately from "
                 "general evidence",
                 about=(
@@ -1193,7 +1473,7 @@ elif page == "Vendor / TPSP Register":
             cde_connection = st.text_area("How does this vendor connect to / affect the CDE?")
             contract_ref = st.text_input("Contract reference")
             notes = st.text_area("Notes")
-            submitted = st.form_submit_button("Add vendor")
+            submitted = st.form_submit_button("Add vendor", disabled=reviewer_mode)
             if submitted:
                 if not vendor_name.strip():
                     st.error("Vendor name is required.")
@@ -1236,7 +1516,7 @@ elif page == "Vendor / TPSP Register":
                 )
                 bcol1, bcol2 = st.columns([1, 5])
                 with bcol1:
-                    if st.button("🗑️ Delete", key=f"del_vendor_{v['id']}"):
+                    if st.button("🗑️ Delete", key=f"del_vendor_{v['id']}", disabled=reviewer_mode):
                         db.delete_vendor(v["id"])
                         st.rerun()
 
@@ -1252,7 +1532,7 @@ elif page == "Vendor / TPSP Register":
         )
 
 elif page == "Identified Risks":
-    page_header("⚠️", "Identified Risks",
+    page_header("⚠️", t("Identified Risks", "المخاطر المرصودة"),
                 "Internal risk items tracked from this tool — not your organization's official risk register",
                 about=(
                     "**A lightweight risk register**, scored on a standard 5×5 Likelihood × Impact "
@@ -1269,7 +1549,7 @@ elif page == "Identified Risks":
 
     top1, top2 = st.columns([1, 3])
     with top1:
-        if st.button("🔄 Sync risks from gap report", type="primary"):
+        if st.button("🔄 Sync risks from gap report", type="primary", disabled=reviewer_mode):
             gaps = ce.build_gap_report()
             result = re_.sync_auto_risks_from_gaps(gaps)
             st.success(
@@ -1299,7 +1579,7 @@ elif page == "Identified Risks":
                 status = st.selectbox("Status", re_.STATUS_OPTIONS)
             description = st.text_area("Description")
             mitigation = st.text_area("Mitigation plan")
-            submitted = st.form_submit_button("Add risk")
+            submitted = st.form_submit_button("Add risk", disabled=reviewer_mode)
             if submitted:
                 if not title.strip():
                     st.error("Risk title is required.")
@@ -1362,7 +1642,7 @@ elif page == "Identified Risks":
 
                 bc1, bc2 = st.columns([1, 5])
                 with bc1:
-                    if st.button("💾 Save", key=f"save_{r['id']}"):
+                    if st.button("💾 Save", key=f"save_{r['id']}", disabled=reviewer_mode):
                         new_score = re_.compute_risk_score(new_likelihood, new_impact)
                         new_level = re_.risk_level_for_score(new_score)
                         db.update_risk(
@@ -1373,7 +1653,7 @@ elif page == "Identified Risks":
                         st.success("Updated.")
                         st.rerun()
                 with bc2:
-                    if st.button("🗑️ Delete", key=f"del_{r['id']}"):
+                    if st.button("🗑️ Delete", key=f"del_{r['id']}", disabled=reviewer_mode):
                         db.delete_risk(r["id"])
                         st.rerun()
 
@@ -1397,7 +1677,7 @@ elif page == "Identified Risks":
 # and offers a "sync these gaps into the Identified Risks register" button.
 # ----------------------------------------------------------------------------
 elif page == "Gap Report":
-    page_header("🕳️", "Gap Report & Remediation Plan",
+    page_header("🕳️", t("Gap Report & Remediation Plan", "تقرير الفجوات وخطة المعالجة"),
                 f"Sub-requirements below the compliant threshold ({ce.COMPLIANT_THRESHOLD}/100)",
                 about=(
                     "**Shows exactly which sub-requirements are still below the compliant score "
@@ -1445,7 +1725,8 @@ elif page == "Gap Report":
 # numbers.
 # ----------------------------------------------------------------------------
 elif page == "Requirement Explorer":
-    page_header("📚", "PCI DSS Requirement Explorer", "Browse the full catalog and current evidence status",
+    page_header("📚", t("PCI DSS Requirement Explorer", "دليل متطلبات PCI DSS"),
+                t("Browse the full catalog and current evidence status", "تصفح الدليل الكامل وحالة الأدلة الحالية"),
                 about=(
                     "**A read-only, browsable view of the entire PCI DSS catalog**, loaded from "
                     "`data/pci_dss_data.json`, with the current score/status shown next to each "
@@ -1482,7 +1763,8 @@ elif page == "Requirement Explorer":
 # used later to prove a stored file hasn't been tampered with.
 # ----------------------------------------------------------------------------
 elif page == "Evidence Log":
-    page_header("🗂️", "Evidence Log", "Every artifact submitted so far, in one place",
+    page_header("🗂️", t("Evidence Log", "سجل الأدلة"),
+                t("Every artifact submitted so far, in one place", "كل الأدلة المرفوعة في مكان واحد"),
                 about=(
                     "**A chronological table of every file ever uploaded**, pulled straight from the "
                     "`evidence` table, including each file's **SHA-256 hash** — a fingerprint that "
@@ -1523,7 +1805,8 @@ elif page == "Evidence Log":
 # mistaken for live functionality.
 # ----------------------------------------------------------------------------
 elif page == "Automated Connectors (demo)":
-    page_header("🔌", "Automated Evidence Ingestion", "Roadmap concept — not a live integration",
+    page_header("🔌", t("Automated Evidence Ingestion", "استيراد الأدلة تلقائيًا"),
+                t("Roadmap concept — not a live integration", "فكرة مستقبلية — مش شغالة فعليًا"),
                 about=(
                     "**Not a real feature yet.** This page only shows what it would look like to "
                     "auto-pull evidence from tools like AWS Config, Wazuh, or a vulnerability scanner, "
@@ -1572,7 +1855,8 @@ elif page == "Automated Connectors (demo)":
 # Uses sample/illustrative data only.
 # ----------------------------------------------------------------------------
 elif page == "Alerts & Drift (demo)":
-    page_header("📡", "Compliance Drift Alerts", "Roadmap concept — not a live integration",
+    page_header("📡", t("Compliance Drift Alerts", "تنبيهات انحراف الامتثال"),
+                t("Roadmap concept — not a live integration", "فكرة مستقبلية — مش شغالة فعليًا"),
                 about=(
                     "**Also not a real feature yet.** A mockup of what alerts would look like if the "
                     "app could detect that a previously-compliant control had *drifted* out of "
@@ -1610,7 +1894,8 @@ elif page == "Alerts & Drift (demo)":
 # (reviewer sign-off, sampling notes, a separate read-only auditor login).
 # ----------------------------------------------------------------------------
 elif page == "QSA Audit View (demo)":
-    page_header("🧾", "QSA Audit View", "Roadmap concept — not a live integration",
+    page_header("🧾", t("QSA Audit View", "واجهة المدقق (QSA)"),
+                t("Roadmap concept — not a live integration", "فكرة مستقبلية — مش شغالة فعليًا"),
                 about=(
                     "**Mostly real, partly mockup.** The compliance %, per-file SHA-256 hashes, and "
                     "the *Generate audit PDF* button below are wired to your real data.\n\n"
@@ -1651,3 +1936,167 @@ elif page == "QSA Audit View (demo)":
             "SHA-256 is computed from each stored file's actual bytes at upload time — a real, "
             "per-file integrity hash (no longer a placeholder)."
         )
+
+# ----------------------------------------------------------------------------
+# PAGE: Settings & Security
+# ----------------------------------------------------------------------------
+# Not part of the roadmap/demo group — this is real, live configuration:
+# the Local engine's scoring weights, encryption/passcode status, and full
+# data export/import. Kept off the main "Workspace" nav group since it's
+# infrastructure, not assessment work.
+# ----------------------------------------------------------------------------
+elif page == "Settings & Security":
+    page_header("⚙️", t("Settings & Security", "الإعدادات والأمان"),
+                "Local engine tuning, encryption status, and full data backup/restore",
+                about=(
+                    "**Everything on this page is real and live** — nothing here is a roadmap mockup.\n\n"
+                    "- **Local engine weights:** the four numbers driving `local_analyzer.py`'s scoring "
+                    "(keyword / title / example-evidence weights, plus the fuzzy-match threshold). "
+                    "Changing them here affects every future Local-engine analysis immediately.\n"
+                    "- **Security status:** confirms the passcode gate and encryption-at-rest are active, "
+                    "without ever displaying the actual secrets on screen.\n"
+                    "- **Backup & restore:** exports every table in the database as one JSON file, or "
+                    "restores from one — a full **replace**, not a merge, so restoring asks for "
+                    "confirmation first."
+                ))
+
+    tab_engine, tab_security, tab_data = st.tabs(["🧩 Local Engine", "🔐 Security", "💾 Backup & Restore"])
+
+    with tab_engine:
+        st.markdown("##### Scoring weights")
+        st.caption(
+            "These four numbers control how `local_analyzer.py` scores evidence. The three main "
+            "weights should add up to roughly 1.0 (they're re-normalized if they don't). Reset to "
+            "defaults any time — nothing here is destructive to past scores already saved."
+        )
+        current_weights = db.get_settings_json("local_engine_weights", default={}) or {}
+        w = {**la.DEFAULT_WEIGHTS, **current_weights}
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            w_kw = st.slider("Keyword weight", 0.0, 1.0, float(w["keyword"]), 0.05,
+                              disabled=reviewer_mode,
+                              help="Weight given to curated evidence_keywords matches — the primary, "
+                                   "highest-trust signal.")
+        with c2:
+            w_title = st.slider("Title/summary weight", 0.0, 1.0, float(w["title"]), 0.05,
+                                 disabled=reviewer_mode,
+                                 help="Weight given to vocabulary mined from the sub-requirement's "
+                                      "title/summary and its parent requirement's title.")
+        with c3:
+            w_example = st.slider("Example-evidence weight", 0.0, 1.0, float(w["example"]), 0.05,
+                                   disabled=reviewer_mode,
+                                   help="Weight given to vocabulary mined from example_evidence entries.")
+
+        c4, c5, c6 = st.columns(3)
+        with c4:
+            w_fuzzy_credit = st.slider("Fuzzy-match credit", 0.0, 1.0, float(w["fuzzy_credit"]), 0.05,
+                                        disabled=reviewer_mode,
+                                        help="How much credit a typo-tolerant fuzzy keyword match gets, "
+                                             "relative to an exact match.")
+        with c5:
+            w_fuzzy_threshold = st.slider("Fuzzy-match threshold", 0.5, 1.0, float(w["fuzzy_threshold"]), 0.01,
+                                           disabled=reviewer_mode,
+                                           help="Minimum similarity ratio (difflib) required to count as "
+                                                "a fuzzy match. Higher = stricter (fewer false positives).")
+        with c6:
+            w_filename_bonus = st.slider("Filename bonus (max pts)", 0, 20, int(w["filename_bonus_max"]), 1,
+                                          disabled=reviewer_mode,
+                                          help="Cap on the small bonus applied when the uploaded filename "
+                                               "corroborates content already found in the text.")
+
+        total = w_kw + w_title + w_example
+        if total > 0 and abs(total - 1.0) > 0.01:
+            st.caption(f"⚠️ Keyword + title + example weights sum to {total:.2f}, not 1.00 — they'll be "
+                       "proportionally re-normalized when used, but consider adjusting them to sum to 1.0.")
+
+        bcol1, bcol2 = st.columns(2)
+        with bcol1:
+            if st.button("💾 Save weights", type="primary", disabled=reviewer_mode, width='stretch'):
+                db.set_settings_json("local_engine_weights", {
+                    "keyword": w_kw, "title": w_title, "example": w_example,
+                    "fuzzy_credit": w_fuzzy_credit, "fuzzy_threshold": w_fuzzy_threshold,
+                    "filename_bonus_max": w_filename_bonus,
+                    "substance_bonus": w.get("substance_bonus", la.DEFAULT_WEIGHTS["substance_bonus"]),
+                })
+                st.success("Saved — future Local-engine analyses will use these weights.")
+        with bcol2:
+            if st.button("↺ Reset to defaults", disabled=reviewer_mode, width='stretch'):
+                db.set_settings_json("local_engine_weights", {})
+                st.success("Reset — reload this page to see the default values.")
+
+    with tab_security:
+        st.markdown("##### Passcode gate")
+        st.markdown(
+            '<span class="vf-secure-badge">🔒 ACTIVE</span> App-level passcode is required for every '
+            "session.", unsafe_allow_html=True,
+        )
+        st.caption("The current passcode is never displayed here. It lives in `APP_PASSCODE` in `.env`.")
+        with st.form("change_passcode_form"):
+            new_pc = st.text_input("Set a new passcode", type="password", disabled=reviewer_mode)
+            if st.form_submit_button("Update passcode", disabled=reviewer_mode):
+                if len(new_pc.strip()) < 6:
+                    st.error("Choose a passcode of at least 6 characters.")
+                else:
+                    from dotenv import set_key
+                    set_key(sec._ENV_PATH, "APP_PASSCODE", new_pc.strip())
+                    st.success("Passcode updated. It takes effect the next time someone logs in "
+                               "(restart the app to also clear anyone else's already-open session).")
+
+        st.divider()
+        st.markdown("##### Encryption at rest")
+        st.markdown(
+            '<span class="vf-secure-badge">🔒 ACTIVE</span> Evidence files and extracted text are '
+            "Fernet-encrypted before they touch disk.", unsafe_allow_html=True,
+        )
+        st.caption(
+            "The encryption key lives in `ENCRYPTION_KEY` in `.env` — never shown here. **Back up "
+            "`.env` separately from `verifai360.db` and `evidence_store/`**: losing the key makes "
+            "encrypted evidence permanently unrecoverable by design. Scores, dates, filenames, and "
+            "sub-requirement IDs remain in plain SQLite columns (needed for querying/sorting); the "
+            "evidence *content* is what's encrypted."
+        )
+
+    with tab_data:
+        st.markdown("##### Export everything")
+        st.caption(
+            "Downloads one JSON file with every row from every table (evidence metadata, "
+            "assessments, risks, CDE scope, compensating controls, testing tracker, vendor "
+            "register, settings). Encrypted text fields stay encrypted in the export. The actual "
+            "evidence files in `evidence_store/` are **not** included — copy that folder alongside "
+            "this JSON for a complete backup."
+        )
+        st.download_button(
+            "⬇️ Export all data as JSON",
+            dp.export_all_data_json(),
+            file_name=f"verifai360_export_{datetime.date.today().isoformat()}.json",
+            mime="application/json",
+            width='stretch',
+        )
+
+        st.divider()
+        st.markdown("##### Restore from a backup")
+        st.warning(
+            "⚠️ Restoring **replaces** everything currently in the database — it is not a merge. "
+            "Export a backup of the current state first if you're not sure."
+        )
+        restore_file = st.file_uploader("Choose a VerifAI 360 export JSON file", type=["json"],
+                                         disabled=reviewer_mode)
+        if restore_file:
+            try:
+                payload = json.loads(restore_file.getvalue().decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                st.error("This doesn't look like a valid JSON file.")
+                payload = None
+            if payload:
+                n_evidence = len(payload.get("tables", {}).get("evidence", []))
+                st.info(f"This file contains {n_evidence} evidence record(s) and its own assessments, "
+                        "risks, and settings.")
+                confirm = st.checkbox("I understand this will replace all current data", disabled=reviewer_mode)
+                if st.button("♻️ Restore now", type="primary", disabled=(reviewer_mode or not confirm)):
+                    try:
+                        summary = dp.import_all_data(payload)
+                        st.success(f"Restored: {summary}")
+                        st.rerun()
+                    except dp.ImportError_ as e:
+                        st.error(f"Restore failed: {e}")

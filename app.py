@@ -40,6 +40,7 @@ only displays what `src/` returns).
 
 import os
 import tempfile
+import secrets
 import datetime
 import json
 import streamlit as st
@@ -376,6 +377,16 @@ st.markdown(
 # ----------------------------------------------------------------------------
 if not st.session_state.get("authenticated", False):
     sec.get_or_create_passcode()  # auto-generates + persists to .env on first run if missing
+
+    # Brute-force throttling: identify the caller by IP when Streamlit exposes
+    # it, falling back to a per-session identity (still throttles a single
+    # browser/session hammering the form even when IP isn't available — see
+    # src/security.py for the full scope note on this control's limits).
+    _client_key = getattr(st.context, "ip_address", None) or st.session_state.get("_client_fallback_id")
+    if not _client_key:
+        _client_key = secrets.token_hex(8)
+        st.session_state["_client_fallback_id"] = _client_key
+
     st.markdown('<div class="vf-login-wrap">', unsafe_allow_html=True)
     st.markdown(
         '<div class="vf-icon-big">🛡️</div>'
@@ -384,14 +395,27 @@ if not st.session_state.get("authenticated", False):
         'RESTRICTED ACCESS — ENTER PASSCODE TO CONTINUE</p>',
         unsafe_allow_html=True,
     )
-    entered = st.text_input("Passcode", type="password", label_visibility="collapsed",
-                             placeholder="Enter passcode")
-    if st.button("🔓 Unlock", type="primary", width='stretch'):
-        if sec.check_passcode(entered):
-            st.session_state["authenticated"] = True
-            st.rerun()
-        else:
-            st.error("Incorrect passcode.")
+
+    _locked, _remaining = sec.check_lockout(_client_key)
+    if _locked:
+        st.error(
+            f"Too many incorrect attempts. Try again in {int(_remaining) + 1} seconds."
+        )
+        entered = st.text_input("Passcode", type="password", label_visibility="collapsed",
+                                 placeholder="Enter passcode", disabled=True)
+        st.button("🔓 Unlock", type="primary", width='stretch', disabled=True)
+    else:
+        entered = st.text_input("Passcode", type="password", label_visibility="collapsed",
+                                 placeholder="Enter passcode")
+        if st.button("🔓 Unlock", type="primary", width='stretch'):
+            if sec.check_passcode(entered):
+                sec.record_successful_attempt(_client_key)
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                sec.record_failed_attempt(_client_key)
+                st.error("Incorrect passcode.")
+
     with st.expander("First time here? / أول مرة تفتح التطبيق؟"):
         st.caption(
             "No passcode was configured, so one was generated automatically and saved to your "

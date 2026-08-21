@@ -42,7 +42,7 @@ def export_all_data() -> dict:
     with db.get_conn() as conn:
         payload = {
             "format_version": EXPORT_FORMAT_VERSION,
-            "exported_at": datetime.datetime.utcnow().isoformat(),
+            "exported_at": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat(),
             "tables": {},
         }
         for table in _TABLES:

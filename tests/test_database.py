@@ -95,3 +95,27 @@ def test_migration_backfills_analysis_source_and_text_encrypted(isolated_env, tm
     assert "analysis_source" in assess_cols
     assert row is not None  # old row survived the migration
     assert row["text_encrypted"] == 0  # correctly flagged as pre-encryption, plain data
+
+
+def test_call_log_insert_and_read(isolated_env):
+    from src import database as db
+    db.insert_call_log(engine="local", success=True, filename="a.txt", assessments_count=3)
+    db.insert_call_log(engine="ai", success=False, filename="b.txt", error_message="boom")
+    log = db.get_all_call_log()
+    assert len(log) == 2
+    assert log[0]["filename"] == "b.txt"  # most recent first
+    assert log[1]["assessments_count"] == 3
+
+
+def test_call_log_prunes_beyond_max_rows(isolated_env, monkeypatch):
+    """Guards against the audit trail growing completely unbounded on a
+    long-lived deployment (see README section 12 notes on the audit log)."""
+    from src import database as db
+    monkeypatch.setattr(db, "CALL_LOG_MAX_ROWS", 5)
+    for i in range(12):
+        db.insert_call_log(engine="local", success=True, filename=f"file{i}.txt")
+    log = db.get_all_call_log(limit=1000)
+    assert len(log) == 5
+    # The most recent 5 uploads should be the ones that survived pruning.
+    kept_filenames = {row["filename"] for row in log}
+    assert kept_filenames == {"file7.txt", "file8.txt", "file9.txt", "file10.txt", "file11.txt"}

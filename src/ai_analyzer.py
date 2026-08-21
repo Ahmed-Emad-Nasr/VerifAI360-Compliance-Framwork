@@ -231,9 +231,11 @@ def analyze_evidence(evidence_text: str, pci_data: dict, target_sub_requirement:
         f"<<<EVIDENCE_START>>>\n{safe_evidence}\n<<<EVIDENCE_END>>>"
     )
 
-    response = _generate_with_retry(api_keys, user_parts)
+    response, model_used = _generate_with_retry(api_keys, user_parts)
     raw_text = response.text
-    return _parse_json_response(raw_text)
+    parsed = _parse_json_response(raw_text)
+    parsed["_model_used"] = model_used  # popped by the caller before persisting/displaying
+    return parsed
 
 
 # HTTP 429 with reason RESOURCE_EXHAUSTED means *this key's* quota is used
@@ -247,53 +249,65 @@ def _generate_with_retry(api_keys: list[str], user_parts):
     """
     Calls Gemini with automatic retry + exponential backoff on transient
     errors (503 model overloaded, 500/504 upstream hiccups) for the current
-    key, and automatic failover to the next configured API key when the
-    current key returns 429 RESOURCE_EXHAUSTED (its free-tier quota is
-    exhausted). Only fails outright once every configured key has been
-    tried and none worked.
+    (key, model) pair, automatic fallback across MODEL_FALLBACK_CHAIN when a
+    model is having a sustained bad day, and automatic failover to the next
+    configured API key when the current key returns 429 RESOURCE_EXHAUSTED
+    (its free-tier quota is exhausted). Only fails outright once every
+    (key, model) combination has been tried and none worked.
+
+    Returns (response, model_name_used) so the caller can record exactly
+    which model actually produced the result (for the analysis audit log).
     """
     last_error = None
 
     for key_index, api_key in enumerate(api_keys, start=1):
         client = _get_client(api_key)
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                return client.models.generate_content(
-                    model=MODEL_NAME,
-                    contents="\n".join(user_parts),
-                    config=genai_types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT_TEMPLATE,
-                        response_mime_type="application/json",
-                        max_output_tokens=4000,
-                    ),
-                )
-            except genai_errors.APIError as e:
-                last_error = e
-                status_code = getattr(e, "code", None)
+        for model_name in MODEL_FALLBACK_CHAIN:
+            quota_exhausted_on_this_key = False
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents="\n".join(user_parts),
+                        config=genai_types.GenerateContentConfig(
+                            system_instruction=SYSTEM_PROMPT_TEMPLATE,
+                            response_mime_type="application/json",
+                            max_output_tokens=4000,
+                        ),
+                    )
+                    return response, model_name
+                except genai_errors.APIError as e:
+                    last_error = e
+                    status_code = getattr(e, "code", None)
 
-                if status_code == QUOTA_EXHAUSTED_STATUS:
-                    # This key is out of quota — stop retrying it and move
-                    # straight to the next key (if any).
-                    break
+                    if status_code == QUOTA_EXHAUSTED_STATUS:
+                        # This key is out of quota entirely — no other model on
+                        # this same key/account will fare any better. Stop
+                        # trying models on this key and move to the next key.
+                        quota_exhausted_on_this_key = True
+                        break
 
-                if status_code not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES:
-                    # Not a retryable/transient error, or we've exhausted
-                    # retries on this key for a transient error — try the
-                    # next key if there is one; otherwise this loop ends
-                    # and we fall through to the final raise below.
-                    break
+                    if status_code not in RETRYABLE_STATUS_CODES or attempt == MAX_RETRIES:
+                        # Not a retryable/transient error, or retries exhausted
+                        # on this (key, model) pair — try the next model in the
+                        # fallback chain (still on this same key) before
+                        # giving up on the key entirely.
+                        break
 
-                # Exponential backoff with jitter: ~1s, ~2s, ~4s, ~8s (+/- a bit)
-                delay = (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-                time.sleep(delay)
-            except Exception as e:
-                last_error = e
-                break  # non-API error: try the next key rather than looping
+                    # Exponential backoff with jitter: ~1s, ~2s, ~4s, ~8s (+/- a bit)
+                    delay = (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                    time.sleep(delay)
+                except Exception as e:
+                    last_error = e
+                    break  # non-API error: try the next model / key rather than looping
+            if quota_exhausted_on_this_key:
+                break  # don't bother with remaining models on this key
 
-    tried = len(api_keys)
+    tried_keys = len(api_keys)
+    tried_models = len(MODEL_FALLBACK_CHAIN)
     raise AIAnalyzerError(
-        f"Gemini API call failed on all {tried} configured key(s). "
-        f"Last error: {last_error}"
+        f"Gemini API call failed on all {tried_keys} configured key(s) across all "
+        f"{tried_models} fallback model(s). Last error: {last_error}"
     )
 
 

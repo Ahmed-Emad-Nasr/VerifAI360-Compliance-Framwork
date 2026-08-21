@@ -143,7 +143,7 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
     # uploads landing on an identical stored filename would let the second
     # one silently overwrite the first (and, worse, a later duplicate-cleanup
     # delete would then remove both instead of just the intended copy).
-    stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S%f") + "_" + secrets.token_hex(4)
+    stamp = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y%m%dT%H%M%S%f") + "_" + secrets.token_hex(4)
     stored_name = _safe_stored_filename(original_filename, stamp)
     stored_path = os.path.join(EVIDENCE_STORE, stored_name)
 
@@ -200,7 +200,7 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
                 target_sub_requirement=target_sub_requirement,
                 prior_context=prior_context,
             )
-            model_used = ai.MODEL_NAME
+            model_used = result.pop("_model_used", ai.MODEL_NAME)
     except Exception as e:
         db.insert_call_log(
             engine=analysis_mode, success=False, filename=original_filename,

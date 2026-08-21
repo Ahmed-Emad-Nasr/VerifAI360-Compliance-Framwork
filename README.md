@@ -331,6 +331,19 @@ https://ai.google.dev/gemini-api/docs/pricing.
   scores are clamped to 0–100, missing fields get safe defaults.
 - Transient-only retry policy: only retryable HTTP statuses (429/500/503/504) trigger backoff;
   everything else (e.g. a malformed request) fails fast instead of retry-looping.
+- **Multi-model fallback, not just multi-key.** `MODEL_FALLBACK_CHAIN` in `ai_analyzer.py` is
+  actually consulted now: if a model is stuck returning 503 for all its retries, the next model
+  in the chain is tried on the *same* key before moving on; a 429 (quota exhausted) still skips
+  straight to the next *key* instead of wasting calls on sibling models that share the same quota.
+- **Passcode brute-force throttling.** After `security.MAX_FAILED_ATTEMPTS` wrong passcodes from
+  the same caller, an increasing lockout (`LOCKOUT_SECONDS`, doubling up to `MAX_LOCKOUT_SECONDS`)
+  kicks in. Honest scope note: this is in-process memory keyed by IP (via `st.context.ip_address`,
+  falling back to a per-session id) — good enough for the single-process localhost/small-team
+  deployment this app targets, not a substitute for a real auth service / WAF rate limiter behind
+  a multi-instance deployment.
+- **Analysis audit log has a retention cap.** `analysis_call_log` prunes itself down to
+  `database.CALL_LOG_MAX_ROWS` (default 5000) on every insert, oldest rows first, so the audit
+  trail can't grow completely unbounded on a long-lived deployment.
 
 **Known gaps / recommended next steps (roughly by priority):**
 1. ~~No authentication on the app itself.~~ **Resolved** — `src/security.py` adds a

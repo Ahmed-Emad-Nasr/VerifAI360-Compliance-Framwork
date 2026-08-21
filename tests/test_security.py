@@ -66,3 +66,71 @@ def test_decrypt_with_wrong_key_fails_cleanly(isolated_env, tmp_path):
         assert False, "should have raised DecryptionError"
     except sec.DecryptionError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Passcode brute-force lockout
+# ---------------------------------------------------------------------------
+
+def _reset_lockout_state():
+    from src import security as sec
+    sec._failed_attempts.clear()
+
+
+def test_not_locked_before_any_failures():
+    from src import security as sec
+    _reset_lockout_state()
+    locked, remaining = sec.check_lockout("client-a")
+    assert locked is False
+    assert remaining == 0.0
+
+
+def test_locked_out_after_max_failed_attempts():
+    from src import security as sec
+    _reset_lockout_state()
+    for _ in range(sec.MAX_FAILED_ATTEMPTS):
+        sec.record_failed_attempt("client-b")
+    locked, remaining = sec.check_lockout("client-b")
+    assert locked is True
+    assert remaining > 0
+
+
+def test_failures_below_threshold_do_not_lock():
+    from src import security as sec
+    _reset_lockout_state()
+    for _ in range(sec.MAX_FAILED_ATTEMPTS - 1):
+        sec.record_failed_attempt("client-c")
+    locked, _ = sec.check_lockout("client-c")
+    assert locked is False
+
+
+def test_successful_attempt_clears_lockout_state():
+    from src import security as sec
+    _reset_lockout_state()
+    for _ in range(sec.MAX_FAILED_ATTEMPTS):
+        sec.record_failed_attempt("client-d")
+    sec.record_successful_attempt("client-d")
+    locked, _ = sec.check_lockout("client-d")
+    assert locked is False
+
+
+def test_lockout_is_scoped_per_client_key():
+    from src import security as sec
+    _reset_lockout_state()
+    for _ in range(sec.MAX_FAILED_ATTEMPTS):
+        sec.record_failed_attempt("client-e")
+    locked_e, _ = sec.check_lockout("client-e")
+    locked_f, _ = sec.check_lockout("client-f")
+    assert locked_e is True
+    assert locked_f is False
+
+
+def test_lockout_duration_grows_with_repeated_failures():
+    from src import security as sec
+    _reset_lockout_state()
+    for _ in range(sec.MAX_FAILED_ATTEMPTS):
+        sec.record_failed_attempt("client-g")
+    _, first_remaining = sec.check_lockout("client-g")
+    sec.record_failed_attempt("client-g")  # one more failure past the threshold
+    _, second_remaining = sec.check_lockout("client-g")
+    assert second_remaining >= first_remaining

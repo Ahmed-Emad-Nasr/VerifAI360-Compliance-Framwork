@@ -88,6 +88,53 @@ def get_or_create_encryption_key() -> str:
     return _ensure_env_value("ENCRYPTION_KEY", lambda: Fernet.generate_key().decode())
 
 
+# ---------------------------------------------------------------------------
+# Passcode brute-force throttling
+#
+# Without this, someone who can reach the app's HTTP endpoint (not just the
+# Streamlit UI — a script hitting the same requests) could try passcodes as
+# fast as the network allows. This adds a simple in-memory failed-attempt
+# counter per (rough) client identity with an increasing lockout, so a script
+# gets slowed to a crawl instead of being able to brute-force a ~12-character
+# token_urlsafe passcode at network speed.
+#
+# HONEST SCOPE NOTE: this is in-process memory, not persisted or shared
+# across multiple server workers/replicas — good enough for the single-
+# process localhost/small-deployment use case this app targets, not a
+# substitute for a real auth service behind a proper reverse proxy /
+# WAF-level rate limiter in a larger multi-instance deployment.
+# ---------------------------------------------------------------------------
+_failed_attempts = {}  # client_key -> (count, locked_until_timestamp)
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_SECONDS = 30  # doubles per additional failure past the threshold, capped below
+MAX_LOCKOUT_SECONDS = 300
+
+
+def check_lockout(client_key: str):
+    """Returns (locked: bool, seconds_remaining: float) for this client_key."""
+    import time as _time
+    count, locked_until = _failed_attempts.get(client_key, (0, 0))
+    remaining = locked_until - _time.time()
+    if remaining > 0:
+        return True, remaining
+    return False, 0.0
+
+
+def record_failed_attempt(client_key: str):
+    import time as _time
+    count, _ = _failed_attempts.get(client_key, (0, 0))
+    count += 1
+    if count >= MAX_FAILED_ATTEMPTS:
+        lockout = min(LOCKOUT_SECONDS * (2 ** (count - MAX_FAILED_ATTEMPTS)), MAX_LOCKOUT_SECONDS)
+        _failed_attempts[client_key] = (count, _time.time() + lockout)
+    else:
+        _failed_attempts[client_key] = (count, 0)
+
+
+def record_successful_attempt(client_key: str):
+    _failed_attempts.pop(client_key, None)
+
+
 def _fernet() -> Fernet:
     global _fernet_instance
     if _fernet_instance is None:

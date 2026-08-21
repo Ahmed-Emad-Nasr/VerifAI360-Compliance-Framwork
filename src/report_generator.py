@@ -158,7 +158,7 @@ def _disclaimer_banner(styles):
 
 
 def _cover_page(story, styles, summary, exposure, n_evidence):
-    generated = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    generated = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M UTC")
     story.append(Spacer(1, 3.2 * cm))
     story.append(Paragraph("VerifAI 360", styles["VFTitle"]))
     story.append(Spacer(1, 6))
@@ -753,7 +753,7 @@ def generate_aoc_pdf(aoc_info: dict) -> bytes:
         1 for r in summary["requirements"] if r["in_scope"]
         for s in r["sub_requirements"] if s["status"] == "Compliant"
     )
-    generated = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    generated = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M UTC")
 
     styles = _styles()
     buffer = io.BytesIO()

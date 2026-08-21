@@ -58,6 +58,18 @@ from . import security as sec
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "verifai360.db")
 
+# Cap on how many rows analysis_call_log is allowed to keep — see
+# insert_call_log() below. Chosen generously (thousands of uploads' worth on a
+# single-user/small-team deployment) so pruning only ever removes genuinely
+# old history, not anything a person would still want to look back at.
+CALL_LOG_MAX_ROWS = 5000
+
+
+def _utcnow_iso() -> str:
+    """Naive-UTC ISO timestamp — same format `datetime.utcnow().isoformat()` used to
+    produce, without triggering its Python 3.12+ deprecation warning."""
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat()
+
 
 @contextmanager
 def get_conn():
@@ -276,7 +288,7 @@ def insert_evidence(filename, stored_path, evidence_type, target_sub_requirement
                (filename, stored_path, evidence_type, uploaded_at, target_sub_requirement,
                 raw_text_excerpt, text_encrypted, sha256)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (filename, stored_path, evidence_type, datetime.datetime.utcnow().isoformat(),
+            (filename, stored_path, evidence_type, _utcnow_iso(),
              target_sub_requirement, excerpt, int(bool(encrypt and raw_text_excerpt)), sha256),
         )
         return cur.lastrowid
@@ -317,12 +329,12 @@ def insert_assessment(evidence_id, sub_requirement_id, is_primary_target, suffic
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (evidence_id, sub_requirement_id, int(is_primary_target), sufficiency_score,
              maturity_level, rationale, json.dumps(gaps or []), json.dumps(recommendations or []),
-             analysis_source, datetime.datetime.utcnow().isoformat()),
+             analysis_source, _utcnow_iso()),
         )
         conn.execute(
             """INSERT INTO score_history (sub_requirement_id, score, recorded_at)
                VALUES (?, ?, ?)""",
-            (sub_requirement_id, sufficiency_score, datetime.datetime.utcnow().isoformat()),
+            (sub_requirement_id, sufficiency_score, _utcnow_iso()),
         )
 
 
@@ -371,7 +383,11 @@ def insert_call_log(engine, success, filename=None, evidence_id=None, model_used
                      target_sub_requirement=None, error_message=None, assessments_count=None):
     """Records one call to an analysis engine (AI or local), win or lose. This is the
     audit trail for 'what evidence was analyzed, when, by which engine/model, and what
-    came back' — see README section 12, known-gap #4."""
+    came back' — see README section 12, known-gap #4.
+
+    Also prunes the table down to CALL_LOG_MAX_ROWS on every insert (deleting the
+    oldest rows first) so this audit trail can't grow completely unbounded on a
+    long-lived deployment."""
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO analysis_call_log
@@ -380,9 +396,18 @@ def insert_call_log(engine, success, filename=None, evidence_id=None, model_used
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (evidence_id, filename, engine, model_used, target_sub_requirement,
              1 if success else 0, error_message, assessments_count,
-             datetime.datetime.utcnow().isoformat()),
+             _utcnow_iso()),
         )
-        return cur.lastrowid
+        row_id = cur.lastrowid
+        conn.execute(
+            """DELETE FROM analysis_call_log WHERE id IN (
+                   SELECT id FROM analysis_call_log
+                   ORDER BY called_at DESC, id DESC
+                   LIMIT -1 OFFSET ?
+               )""",
+            (CALL_LOG_MAX_ROWS,),
+        )
+        return row_id
 
 
 def get_all_call_log(limit=500):
@@ -430,7 +455,7 @@ def get_latest_assessment_per_subreq():
 
 def insert_risk(requirement_id, sub_requirement_id, title, description, likelihood, impact,
                  risk_score, risk_level, owner, status, mitigation_plan, due_date, source):
-    now = datetime.datetime.utcnow().isoformat()
+    now = _utcnow_iso()
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO risk_register
@@ -447,7 +472,7 @@ def insert_risk(requirement_id, sub_requirement_id, title, description, likeliho
 def update_risk(risk_id, **fields):
     if not fields:
         return
-    fields["updated_at"] = datetime.datetime.utcnow().isoformat()
+    fields["updated_at"] = _utcnow_iso()
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     with get_conn() as conn:
         conn.execute(
@@ -528,7 +553,7 @@ def set_settings_json(key, value):
 
 def insert_cde_system(system_name, component_type, description, in_scope, connected_to_cde,
                        data_flow_notes, owner):
-    now = datetime.datetime.utcnow().isoformat()
+    now = _utcnow_iso()
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO cde_scope
@@ -544,7 +569,7 @@ def insert_cde_system(system_name, component_type, description, in_scope, connec
 def update_cde_system(item_id, **fields):
     if not fields:
         return
-    fields["updated_at"] = datetime.datetime.utcnow().isoformat()
+    fields["updated_at"] = _utcnow_iso()
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     with get_conn() as conn:
         conn.execute(f"UPDATE cde_scope SET {set_clause} WHERE id = ?", (*fields.values(), item_id))
@@ -569,7 +594,7 @@ def insert_compensating_control(sub_requirement_id, original_requirement_text, c
                                  objective_met, compensating_control_description, additional_risk,
                                  validation_evidence, reviewed_by, review_date, next_review_date,
                                  status):
-    now = datetime.datetime.utcnow().isoformat()
+    now = _utcnow_iso()
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO compensating_controls
@@ -587,7 +612,7 @@ def insert_compensating_control(sub_requirement_id, original_requirement_text, c
 def update_compensating_control(item_id, **fields):
     if not fields:
         return
-    fields["updated_at"] = datetime.datetime.utcnow().isoformat()
+    fields["updated_at"] = _utcnow_iso()
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     with get_conn() as conn:
         conn.execute(f"UPDATE compensating_controls SET {set_clause} WHERE id = ?",
@@ -615,7 +640,7 @@ def get_all_compensating_controls():
 def insert_test_item(test_type, related_requirement, scope_description, frequency,
                       last_performed_date, next_due_date, result_summary, result_status,
                       evidence_id, owner):
-    now = datetime.datetime.utcnow().isoformat()
+    now = _utcnow_iso()
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO testing_tracker
@@ -631,7 +656,7 @@ def insert_test_item(test_type, related_requirement, scope_description, frequenc
 def update_test_item(item_id, **fields):
     if not fields:
         return
-    fields["updated_at"] = datetime.datetime.utcnow().isoformat()
+    fields["updated_at"] = _utcnow_iso()
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     with get_conn() as conn:
         conn.execute(f"UPDATE testing_tracker SET {set_clause} WHERE id = ?",
@@ -657,7 +682,7 @@ def get_all_test_items():
 def insert_vendor(vendor_name, service_provided, pci_dss_responsibility, cde_connection,
                    compliance_status, attestation_type, attestation_expiry, last_reviewed_date,
                    next_review_due, contract_reference, notes):
-    now = datetime.datetime.utcnow().isoformat()
+    now = _utcnow_iso()
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO vendor_register
@@ -675,7 +700,7 @@ def insert_vendor(vendor_name, service_provided, pci_dss_responsibility, cde_con
 def update_vendor(item_id, **fields):
     if not fields:
         return
-    fields["updated_at"] = datetime.datetime.utcnow().isoformat()
+    fields["updated_at"] = _utcnow_iso()
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     with get_conn() as conn:
         conn.execute(f"UPDATE vendor_register SET {set_clause} WHERE id = ?",

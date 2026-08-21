@@ -78,3 +78,39 @@ def test_unknown_analysis_mode_raises(isolated_env, sample_text_file):
     from src import compliance_engine as ce
     with pytest.raises(ValueError):
         ce.process_uploaded_evidence(sample_text_file, "x.txt", analysis_mode="quantum")
+
+
+def test_successful_upload_writes_call_log(isolated_env, sample_text_file):
+    """README section 12 gap #4: every analysis-engine call must be audit-logged."""
+    from src import compliance_engine as ce
+    from src import database as db
+
+    ce.process_uploaded_evidence(sample_text_file, "network_security_policy.txt",
+                                  target_sub_requirement="1.1", analysis_mode="local")
+    log = db.get_all_call_log()
+    assert len(log) == 1
+    assert log[0]["engine"] == "local"
+    assert log[0]["success"] == 1
+    assert log[0]["filename"] == "network_security_policy.txt"
+    assert log[0]["assessments_count"] >= 1
+
+
+def test_mismatched_file_content_is_rejected(isolated_env, tmp_path):
+    """README section 12 gap #5: extension alone must not be trusted — a text
+    file renamed to .pdf has to be caught before it reaches pdfplumber."""
+    from src import compliance_engine as ce
+
+    p = tmp_path / "fake.pdf"
+    p.write_text("this is plain text, not a real PDF")
+    with pytest.raises(ce.EvidenceUploadError):
+        ce.process_uploaded_evidence(str(p), "fake.pdf", analysis_mode="local")
+
+
+def test_real_pdf_signature_is_accepted(tmp_path):
+    """A genuine PDF header must pass the signature check (content-parsing
+    correctness is covered separately; this only tests the gap #5 guard)."""
+    from src import evidence_processor as ep
+
+    p = tmp_path / "real.pdf"
+    p.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF")
+    ep.validate_file_signature(str(p), "real.pdf")  # should not raise

@@ -161,6 +161,14 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
             os.remove(stored_path)  # don't leave an unused plaintext copy behind
             raise DuplicateEvidenceError(existing["id"], existing["filename"], existing["uploaded_at"])
 
+    # Content-based check, not just the extension: reject a file whose actual
+    # bytes don't match what its extension claims (README section 12, gap #5).
+    try:
+        ep.validate_file_signature(stored_path, original_filename)
+    except ep.EvidenceSignatureError as e:
+        os.remove(stored_path)  # don't leave the rejected file behind in evidence_store/
+        raise EvidenceUploadError(str(e)) from e
+
     evidence_type = ep.detect_evidence_type(original_filename)
     text = ep.extract_text(stored_path)  # extracted while stored_path is still plaintext
 
@@ -169,23 +177,42 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
     pci_data = load_pci_data()
     prior_context = _build_prior_context(target_sub_requirement)
 
-    if analysis_mode == "local":
-        weights = db.get_settings_json("local_engine_weights", default={}) or {}
-        result = la.analyze_evidence(
-            evidence_text=text,
-            pci_data=pci_data,
-            target_sub_requirement=target_sub_requirement,
-            prior_context=prior_context,
-            filename=original_filename,
-            weights=weights,
+    # Every call to an analysis engine — AI or local — is logged here, win or
+    # lose, before we do anything else with the result. This is the audit
+    # trail for "what evidence was analyzed, when, by which engine/model, and
+    # what came back" (README section 12, known-gap #4).
+    try:
+        if analysis_mode == "local":
+            weights = db.get_settings_json("local_engine_weights", default={}) or {}
+            result = la.analyze_evidence(
+                evidence_text=text,
+                pci_data=pci_data,
+                target_sub_requirement=target_sub_requirement,
+                prior_context=prior_context,
+                filename=original_filename,
+                weights=weights,
+            )
+            model_used = None
+        else:
+            result = ai.analyze_evidence(
+                evidence_text=text,
+                pci_data=pci_data,
+                target_sub_requirement=target_sub_requirement,
+                prior_context=prior_context,
+            )
+            model_used = ai.MODEL_NAME
+    except Exception as e:
+        db.insert_call_log(
+            engine=analysis_mode, success=False, filename=original_filename,
+            model_used=(ai.MODEL_NAME if analysis_mode == "ai" else None),
+            target_sub_requirement=target_sub_requirement, error_message=str(e),
         )
-    else:
-        result = ai.analyze_evidence(
-            evidence_text=text,
-            pci_data=pci_data,
-            target_sub_requirement=target_sub_requirement,
-            prior_context=prior_context,
-        )
+        raise
+
+    db.insert_call_log(
+        engine=analysis_mode, success=True, filename=original_filename, model_used=model_used,
+        target_sub_requirement=target_sub_requirement, assessments_count=len(result.get("assessments", [])),
+    )
 
     evidence_id = db.insert_evidence(
         filename=original_filename,

@@ -108,16 +108,19 @@ Dashboard / Gap Report / Risk pages now reflect the new score automatically
 | File | What it's for, in one sentence |
 |---|---|
 | `app.py` | The entire user interface — every screen you see is drawn from here. Contains almost no logic of its own. |
-| `src/database.py` | The only file that reads/writes the SQLite database. Every table has simple `insert_x()` / `update_x()` / `delete_x()` / `get_all_x()` functions. |
-| `src/evidence_processor.py` | Converts an uploaded file into plain text — reads PDFs/Word docs directly, and OCRs screenshots/scanned pages using Tesseract. |
+| `src/database.py` | The only file that reads/writes the SQLite database. Every table has simple `insert_x()` / `update_x()` / `delete_x()` / `get_all_x()` functions, plus `insert_call_log()` / `get_all_call_log()` for the analysis audit trail. |
+| `src/evidence_processor.py` | Converts an uploaded file into plain text — reads PDFs/Word docs directly, OCRs screenshots/scanned pages using Tesseract, and validates each file's actual byte signature against its claimed extension before any of that (`validate_file_signature()`). |
 | `src/ai_analyzer.py` | Talks to the Google Gemini API. Builds the prompt, sends the evidence text, and validates the JSON that comes back. Includes retry logic and multi-key failover. |
+| `src/local_analyzer.py` | A fully offline, deterministic alternative to `ai_analyzer.py` — scores evidence via curated-keyword/vocabulary matching against `data/pci_dss_data.json` (with typo-tolerant fuzzy matching and negation-awareness, so "we have no firewall policy" isn't scored as evidence a firewall policy exists), no network call, no data leaves the machine. |
+| `src/security.py` | The app-level passcode gate and Fernet encryption-at-rest for evidence files/text (see README section 12). |
+| `src/data_portability.py` | Full-state JSON export/import of every database table, for backup or moving an assessment to another machine. |
 | `src/compliance_engine.py` | The "orchestrator": runs a full evidence upload end-to-end, and turns raw scores into the overall compliance percentage and the gap report. |
 | `src/risk_engine.py` | Turns a compliance gap into a Likelihood × Impact risk score, and manages the risk register. |
 | `src/scoping_data.py` | A static lookup table: for each SAQ type (A, B, C, D, ...), which of the 12 top-level PCI DSS requirements actually apply. |
 | `src/report_generator.py` | Builds the downloadable PDF report using the `reportlab` library — no browser or external renderer needed. |
 | `data/pci_dss_data.json` | The condensed PCI DSS requirement catalog the whole app is built around (see the accuracy disclaimer below). |
 | `verifai360.db` | The SQLite database file itself — created automatically the first time you run the app. |
-| `evidence_store/` | Every uploaded file gets copied here, renamed with a timestamp + sanitized filename. |
+| `evidence_store/` | Every uploaded file gets copied here, renamed with a timestamp + sanitized filename, then encrypted at rest. |
 | `config.toml` | Streamlit's native theme settings (dark mode, accent color) plus the server-side upload size cap. |
 
 Every source file under `src/` starts with a docstring explaining its
@@ -196,13 +199,16 @@ VerifAI360/
 ├── data/
 │   └── pci_dss_data.json      # condensed requirement catalog (see disclaimer)
 ├── src/
-│   ├── database.py            # SQLite persistence (evidence, assessments, identified risks)
-│   ├── evidence_processor.py  # text/PDF/DOCX/OCR extraction
+│   ├── database.py            # SQLite persistence (evidence, assessments, identified risks, call log)
+│   ├── evidence_processor.py  # text/PDF/DOCX/OCR extraction + file-signature validation
 │   ├── ai_analyzer.py         # Gemini API call + JSON schema validation + multi-key failover
+│   ├── local_analyzer.py      # offline deterministic scoring engine (no network, no data leaves the machine)
+│   ├── security.py            # passcode gate + encryption at rest (Fernet)
+│   ├── data_portability.py    # full-state JSON export/import
 │   ├── compliance_engine.py   # scoring aggregation + gap report + SHA-256 integrity hashing
 │   ├── risk_engine.py         # risk scoring (Likelihood x Impact) + identified risks
 │   └── report_generator.py    # full PDF compliance report (reportlab)
-├── evidence_store/            # uploaded files get copied here
+├── evidence_store/            # uploaded files get copied here (encrypted at rest)
 ├── requirements.txt
 └── .env.example
 ```
@@ -327,23 +333,44 @@ https://ai.google.dev/gemini-api/docs/pricing.
   everything else (e.g. a malformed request) fails fast instead of retry-looping.
 
 **Known gaps / recommended next steps (roughly by priority):**
-1. **No authentication on the app itself.** This is the highest-priority gap if the app is ever
-   deployed anywhere other than localhost — it currently stores real security/config evidence with
-   no access control. Add an auth layer (Streamlit supports OIDC/SSO via `st.login`, or front it
-   with a reverse proxy that enforces auth) before any shared/hosted deployment.
-2. **Sensitive data sent to a free-tier third-party API.** Gemini's free tier may use
-   prompts/responses to improve their models. For real (non-sanitized) evidence, either use a paid
-   tier with a no-training data-use agreement, or add a redaction/anonymization pass before
-   evidence text is sent.
-3. **No encryption at rest** for `verifai360.db` or `evidence_store/` — both hold potentially
-   sensitive security configuration details in plaintext on disk.
-4. **No audit log of AI calls** (what evidence, when, which model, what came back) — valuable both
-   for QSA-style accountability and for spotting attempted score manipulation over time.
-5. **File-type validation is extension-based only**, not content/magic-byte based — a renamed file
-   could bypass the allowlist.
-6. **Dependencies are unpinned** (`requirements.txt` uses `>=` everywhere) — pin exact versions for
-   a production-facing deployment to avoid an unreviewed transitive update introducing a
-   vulnerability.
+1. ~~No authentication on the app itself.~~ **Resolved** — `src/security.py` adds a
+   shared app-level passcode gate (`APP_PASSCODE` in `.env`, auto-generated on first
+   run if missing) enforced before any page renders. Still a single shared passcode,
+   not full multi-user/role auth — that remains a bigger project if this is ever
+   deployed for a real multi-person team.
+2. **Sensitive data sent to a free-tier third-party API — mitigated, not eliminated.**
+   `src/local_analyzer.py` adds a fully offline, deterministic scoring engine
+   (keyword/vocabulary matching against `data/pci_dss_data.json`) as an alternative
+   to `ai_analyzer.py` — pick either engine per file on the Upload & Analyze page, and
+   local mode never sends evidence text anywhere. If you still want the AI engine's
+   deeper semantic read on real, sensitive evidence, the original recommendation
+   stands: use a paid Gemini tier with a no-training data-use agreement, or add a
+   redaction/anonymization pass before the text is sent — neither of those is built.
+3. ~~No encryption at rest for `verifai360.db` or `evidence_store/`.~~ **Resolved** —
+   `src/security.py` encrypts each evidence file (in `evidence_store/`) and its
+   extracted text excerpt (in the database) with Fernet (AES-128-CBC + HMAC), keyed
+   by `ENCRYPTION_KEY` in `.env` (auto-generated on first run if missing). Honest scope
+   note: this encrypts the sensitive *content*, not the whole SQLite file — filenames,
+   scores, dates, and sub-requirement IDs stay in plain columns because the app needs
+   to query/sort/aggregate on them; full-database encryption would need SQLCipher
+   (a separate compiled SQLite build, not installable via plain pip here).
+4. ~~No audit log of AI calls.~~ **Resolved** — every call to either analysis engine
+   (AI or Local), success or failure, is now recorded in the `analysis_call_log`
+   table (`database.insert_call_log()` / `get_all_call_log()`, wired in
+   `compliance_engine.process_uploaded_evidence()`), capturing the filename, engine,
+   model used, target sub-requirement, success/failure, error message, and how many
+   sub-requirements were scored. Viewable in-app from the **Evidence Log** page under
+   "🧾 Analysis call log (audit trail)".
+5. ~~File-type validation is extension-based only.~~ **Resolved** — `evidence_processor.
+   validate_file_signature()` checks the actual file bytes (magic-byte signatures for
+   PDF, DOCX/ZIP, PNG, JPEG, BMP, TIFF, WEBP) against what the extension claims, and
+   `compliance_engine.process_uploaded_evidence()` rejects a mismatch (e.g. a renamed
+   file) before it ever reaches pdfplumber/python-docx/pytesseract. Plain-text formats
+   (`.txt`/`.log`/`.csv`/`.json`/...) have no fixed signature by design and are still
+   trusted as-is — there's no equivalent content check possible for those.
+6. ~~Dependencies are unpinned.~~ **Resolved** — `requirements.txt` now pins an exact
+   version for every dependency (`==`, not `>=`); update deliberately and re-run the
+   test suite rather than picking up an unreviewed transitive update automatically.
 
 ---
 

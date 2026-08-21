@@ -148,35 +148,74 @@ def _fuzzy_ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+# Improvement: negation-awareness. Without this, a document that literally
+# says "we do NOT have a documented firewall policy" would score a hit for
+# the keyword "firewall policy" — exactly backwards, since the sentence is
+# reporting the *absence* of the control, not evidence of it.
+NEGATION_CUES = {
+    "no", "not", "without", "lacks", "lacking", "missing", "none", "never",
+    "isn't", "isnt", "doesn't", "doesnt", "don't", "dont", "didn't", "didnt",
+    "hasn't", "hasnt", "haven't", "havent", "wasn't", "wasnt", "weren't", "werent",
+    "insufficient", "unable", "fails", "failed", "absence", "lacked",
+}
+
+
+def _is_negated(text_norm: str, match_start: int, window_chars: int = 45) -> bool:
+    """Checks the short span of text immediately before a keyword match for a
+    negation cue ('no firewall policy', 'does not have a firewall policy'),
+    within the SAME sentence only — a negation cue from an earlier, unrelated
+    sentence doesn't carry over."""
+    if match_start <= 0:
+        return False
+    start = max(0, match_start - window_chars)
+    preceding = text_norm[start:match_start]
+    last_boundary = max(preceding.rfind(". "), preceding.rfind("! "),
+                         preceding.rfind("? "), preceding.rfind("\n"))
+    if last_boundary != -1:
+        preceding = preceding[last_boundary + 1:]
+    preceding_words = re.findall(r"[a-z']+", preceding)
+    return any(w in NEGATION_CUES or w.endswith("n't") for w in preceding_words)
+
+
 def _keyword_hits(text_norm: str, keywords: list, fuzzy_threshold: float):
-    """Returns (exact_hits, fuzzy_hits). Exact hits are literal substring
-    matches (full credit). Fuzzy hits are near-misses — e.g. a typo like
-    'firewal policy' instead of 'firewall policy' — found by sliding a
-    same-length word-window across the text and comparing it to the
-    keyword phrase with difflib's similarity ratio. Fuzzy hits get partial
-    credit (see DEFAULT_WEIGHTS['fuzzy_credit']) and are always labeled as
-    fuzzy in the rationale, never silently treated as an exact match."""
+    """Returns (exact_hits, fuzzy_hits, negated_hits). Exact hits are literal
+    substring matches (full credit). Fuzzy hits are near-misses — e.g. a typo
+    like 'firewal policy' instead of 'firewall policy' — found by sliding a
+    same-length word-window across the text and comparing it to the keyword
+    phrase with difflib's similarity ratio. Fuzzy hits get partial credit
+    (see DEFAULT_WEIGHTS['fuzzy_credit']) and are always labeled as fuzzy in
+    the rationale, never silently treated as an exact match. A match (exact
+    or fuzzy) found immediately after a negation cue in the same sentence is
+    routed to negated_hits instead — it's evidence the control is MISSING,
+    not evidence it exists, so it must never count toward the score."""
     text_words = text_norm.split()
-    exact_hits, fuzzy_hits = [], []
+    exact_hits, fuzzy_hits, negated_hits = [], [], []
     for kw in keywords:
         kw_norm = (kw or "").lower().strip()
         if not kw_norm:
             continue
-        if re.search(re.escape(kw_norm), text_norm):
-            exact_hits.append(kw)
+        m = re.search(re.escape(kw_norm), text_norm)
+        if m:
+            (negated_hits if _is_negated(text_norm, m.start()) else exact_hits).append(kw)
             continue
         kw_word_count = len(kw_norm.split())
         best = 0.0
+        best_char_pos = None
+        char_pos = 0
         for i in range(0, max(0, len(text_words) - kw_word_count + 1)):
-            window = " ".join(text_words[i:i + kw_word_count])
+            window_words = text_words[i:i + kw_word_count]
+            window = " ".join(window_words)
             ratio = _fuzzy_ratio(kw_norm, window)
             if ratio > best:
                 best = ratio
+                best_char_pos = char_pos
+            char_pos += len(text_words[i]) + 1  # advance past this word + the space
             if best >= 0.999:
                 break
         if best >= fuzzy_threshold:
-            fuzzy_hits.append(kw)
-    return exact_hits, fuzzy_hits
+            is_neg = best_char_pos is not None and _is_negated(text_norm, best_char_pos)
+            (negated_hits if is_neg else fuzzy_hits).append(kw)
+    return exact_hits, fuzzy_hits, negated_hits
 
 
 def _word_hits(text_norm: str, words: set) -> set:
@@ -236,7 +275,7 @@ def analyze_evidence(evidence_text: str, pci_data: dict, target_sub_requirement:
                 continue
 
             # --- Signal 1: curated evidence_keywords, exact + fuzzy (primary) ---
-            exact_hits, fuzzy_hits = _keyword_hits(text_norm, keywords, w["fuzzy_threshold"])
+            exact_hits, fuzzy_hits, negated_hits = _keyword_hits(text_norm, keywords, w["fuzzy_threshold"])
             weighted_hit_count = len(exact_hits) + w["fuzzy_credit"] * len(fuzzy_hits)
             kw_score = (weighted_hit_count / len(keywords)) * 100 if keywords else 0.0
 
@@ -277,8 +316,13 @@ def analyze_evidence(evidence_text: str, pci_data: dict, target_sub_requirement:
             score = max(0, min(100, score))
 
             found_kw = set(exact_hits) | set(fuzzy_hits)
-            missing_kw = [k for k in keywords if k not in found_kw]
+            missing_kw = [k for k in keywords if k not in found_kw and k not in negated_hits]
             gaps = [f"No mention found of: \u2018{k}\u2019" for k in missing_kw[:6]]
+            if negated_hits:
+                gaps = [
+                    f"Document explicitly states this is MISSING/absent: \u2018{k}\u2019"
+                    for k in negated_hits[:4]
+                ] + gaps
 
             recommendations = []
             if score < 70:
@@ -300,6 +344,12 @@ def analyze_evidence(evidence_text: str, pci_data: dict, target_sub_requirement:
                     f"+{len(fuzzy_hits)} fuzzy/typo-tolerant match"
                     f"{'es' if len(fuzzy_hits) != 1 else ''} ({', '.join(repr(h) for h in fuzzy_hits)}), "
                     f"counted at {int(w['fuzzy_credit'] * 100)}% credit."
+                )
+            if negated_hits:
+                rationale_parts.append(
+                    f"{len(negated_hits)} mention{'s' if len(negated_hits) != 1 else ''} of "
+                    f"({', '.join(repr(h) for h in negated_hits)}) appeared in a negative context "
+                    "(e.g. 'no ...', 'does not have ...') and was correctly excluded, not counted as a match."
                 )
             if title_pool:
                 rationale_parts.append(

@@ -1795,6 +1795,34 @@ elif page == "Evidence Log":
             "(offline keyword-matching) analysis engine."
         )
 
+    with st.expander(t("🧾 Analysis call log (audit trail)", "🧾 سجل استدعاءات التحليل (سجل تدقيق)")):
+        st.caption(
+            t(
+                "Every call to an analysis engine — AI (Gemini) or Local — is logged here, "
+                "success or failure, with the engine/model used and how many sub-requirements "
+                "it returned scores for. This is the audit trail for accountability and for "
+                "spotting repeated failures or unexpected scoring activity.",
+                "يتم تسجيل كل استدعاء لمحرك التحليل هنا، سواء نجح أو فشل، مع المحرك/النموذج "
+                "المستخدم وعدد المتطلبات الفرعية التي تم تقييمها. هذا سجل تدقيق للمساءلة."
+            )
+        )
+        call_log = db.get_all_call_log()
+        if not call_log:
+            st.info(t("No analysis calls logged yet.", "لا يوجد سجل استدعاءات بعد."))
+        else:
+            ldf = pd.DataFrame(call_log)[
+                ["called_at", "filename", "engine", "model_used", "target_sub_requirement",
+                 "success", "assessments_count", "error_message"]
+            ]
+            ldf["engine"] = ldf["engine"].map({"ai": "🤖 AI (Gemini)", "local": "🧩 Local"}).fillna(ldf["engine"])
+            ldf["success"] = ldf["success"].map({1: "✅", 0: "❌"})
+            ldf = ldf.rename(columns={
+                "called_at": "When", "filename": "File", "engine": "Engine",
+                "model_used": "Model", "target_sub_requirement": "Target sub-req",
+                "success": "OK?", "assessments_count": "# scored", "error_message": "Error",
+            })
+            st.dataframe(ldf, width='stretch', hide_index=True)
+
 # ----------------------------------------------------------------------------
 # PAGE: Automated Connectors (demo / roadmap mockup)
 #

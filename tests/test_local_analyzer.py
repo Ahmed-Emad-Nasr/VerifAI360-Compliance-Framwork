@@ -111,3 +111,27 @@ def test_every_subrequirement_has_evidence_keywords(pci_data):
     for req in pci_data["requirements"]:
         for sub in req["sub_requirements"]:
             assert sub.get("evidence_keywords"), f"{sub['id']} has no evidence_keywords"
+
+
+def test_negated_mention_does_not_count_as_a_match(pci_data):
+    """Improvement: a document stating a control is MISSING must not be scored
+    as if it were evidence the control exists."""
+    positive_text = "This document is our firewall policy and roles and responsibilities."
+    negative_text = "We currently have no firewall policy and no defined roles and responsibilities."
+    positive = la.analyze_evidence(positive_text, pci_data, target_sub_requirement="1.1")
+    negative = la.analyze_evidence(negative_text, pci_data, target_sub_requirement="1.1")
+    pos_score = next(a for a in positive["assessments"] if a["sub_requirement_id"] == "1.1")["sufficiency_score"]
+    neg_match = next(a for a in negative["assessments"] if a["sub_requirement_id"] == "1.1")
+    assert neg_match["sufficiency_score"] < pos_score
+    assert "negative context" in neg_match["rationale"]
+    assert any("MISSING/absent" in g for g in neg_match["gaps"])
+
+
+def test_negation_does_not_bleed_across_sentences(pci_data):
+    """A negation cue in one sentence must not suppress a genuine match in the
+    next sentence."""
+    text = "We do not have a vulnerability scan report. However, our firewall policy and roles and responsibilities are documented and reviewed quarterly."
+    result = la.analyze_evidence(text, pci_data, target_sub_requirement="1.1")
+    match = next(a for a in result["assessments"] if a["sub_requirement_id"] == "1.1")
+    assert "firewall policy" not in " ".join(g for g in match["gaps"] if "MISSING" in g)
+    assert match["sufficiency_score"] > 0

@@ -112,6 +112,92 @@ class EvidenceExtractionError(Exception):
     pass
 
 
+class EvidenceSignatureError(Exception):
+    """Raised when a file's actual content doesn't match what its extension claims —
+    e.g. a script renamed to evidence.pdf. See README section 12, known-gap #5."""
+    pass
+
+
+# Magic-byte (file signature) checks, independent of the filename extension.
+# Only formats with a reliable, short, fixed signature are checked here —
+# plain-text formats (.txt/.log/.csv/.json/...) have no such signature by
+# design, so they're intentionally not included and are trusted as-is.
+def _sniff_bytes(filepath: str, n: int = 16) -> bytes:
+    with open(filepath, "rb") as f:
+        return f.read(n)
+
+
+def _is_pdf(head: bytes) -> bool:
+    return head.startswith(b"%PDF-")
+
+
+def _is_docx(head: bytes) -> bool:
+    # .docx is a ZIP container (PK\x03\x04 or the empty-archive variant PK\x05\x06).
+    return head.startswith(b"PK\x03\x04") or head.startswith(b"PK\x05\x06")
+
+
+def _is_png(head: bytes) -> bool:
+    return head.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def _is_jpeg(head: bytes) -> bool:
+    return head.startswith(b"\xff\xd8\xff")
+
+
+def _is_bmp(head: bytes) -> bool:
+    return head.startswith(b"BM")
+
+
+def _is_tiff(head: bytes) -> bool:
+    return head.startswith(b"II*\x00") or head.startswith(b"MM\x00*")
+
+
+def _is_webp(head: bytes) -> bool:
+    return head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+
+
+_SIGNATURE_CHECKS = {
+    ".pdf": (_is_pdf, "PDF"),
+    ".docx": (_is_docx, "ZIP/DOCX"),
+    ".png": (_is_png, "PNG"),
+    ".jpg": (_is_jpeg, "JPEG"),
+    ".jpeg": (_is_jpeg, "JPEG"),
+    ".bmp": (_is_bmp, "BMP"),
+    ".tiff": (_is_tiff, "TIFF"),
+    ".tif": (_is_tiff, "TIFF"),
+    ".webp": (_is_webp, "WEBP"),
+}
+
+
+def validate_file_signature(filepath: str, claimed_filename: str) -> None:
+    """
+    Content-based validation, not just trusting the extension: for every
+    format with a reliable magic-byte signature (PDF, DOCX, and the common
+    image types), read the first few bytes on disk and confirm they match
+    what the extension claims. Raises EvidenceSignatureError on a mismatch
+    (e.g. a renamed .exe uploaded as "screenshot.png") rather than silently
+    handing whatever-it-actually-is to pdfplumber/python-docx/pytesseract.
+
+    Text-like extensions (.txt/.log/.csv/.json/.md/...) have no fixed
+    signature to check by design and are intentionally skipped here.
+    """
+    ext = os.path.splitext(claimed_filename)[1].lower()
+    check = _SIGNATURE_CHECKS.get(ext)
+    if not check:
+        return  # no signature defined for this extension (e.g. plain text) — nothing to check
+    matcher, expected_kind = check
+    try:
+        head = _sniff_bytes(filepath)
+    except OSError as e:
+        raise EvidenceSignatureError(f"Could not read file to verify its contents: {e}") from e
+    if not matcher(head):
+        raise EvidenceSignatureError(
+            f"'{claimed_filename}' has a .{ext.lstrip('.')} extension, but its contents don't look "
+            f"like a real {expected_kind} file. This upload was rejected — a renamed/mismatched file "
+            f"can't be processed as {expected_kind}."
+        )
+
+
 def detect_evidence_type(filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
     if ext in IMAGE_EXTENSIONS:

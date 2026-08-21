@@ -134,6 +134,20 @@ def init_db():
                 value TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS analysis_call_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                evidence_id INTEGER,             -- NULL if the call failed before an evidence row existed
+                filename TEXT,
+                engine TEXT NOT NULL,            -- 'ai' (Gemini) or 'local' (offline)
+                model_used TEXT,                 -- e.g. 'gemini-flash-latest'; NULL for the local engine
+                target_sub_requirement TEXT,
+                success INTEGER NOT NULL,        -- 1 = call returned a usable result, 0 = it raised
+                error_message TEXT,              -- populated only when success = 0
+                assessments_count INTEGER,       -- how many sub-requirements the call returned scores for
+                called_at TEXT NOT NULL,
+                FOREIGN KEY (evidence_id) REFERENCES evidence(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS cde_scope (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 system_name TEXT NOT NULL,
@@ -349,6 +363,33 @@ def get_all_evidence():
             FROM evidence e
             ORDER BY e.uploaded_at DESC
             """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def insert_call_log(engine, success, filename=None, evidence_id=None, model_used=None,
+                     target_sub_requirement=None, error_message=None, assessments_count=None):
+    """Records one call to an analysis engine (AI or local), win or lose. This is the
+    audit trail for 'what evidence was analyzed, when, by which engine/model, and what
+    came back' — see README section 12, known-gap #4."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO analysis_call_log
+               (evidence_id, filename, engine, model_used, target_sub_requirement,
+                success, error_message, assessments_count, called_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (evidence_id, filename, engine, model_used, target_sub_requirement,
+             1 if success else 0, error_message, assessments_count,
+             datetime.datetime.utcnow().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def get_all_call_log(limit=500):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM analysis_call_log ORDER BY called_at DESC LIMIT ?",
+            (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
 

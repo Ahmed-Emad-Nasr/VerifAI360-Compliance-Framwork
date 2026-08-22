@@ -1,0 +1,17 @@
+# Native Streamlit theme. These are the colours Streamlit uses for the parts
+# of the page it paints BEFORE our stylesheet loads (and for a few widget
+# internals CSS can't reach), so they're kept in sync with the tokens in
+# src/theme.py — change them there and mirror them here.
+[theme]
+base = "dark"
+primaryColor = "#22e4d4"
+backgroundColor = "#05070d"
+secondaryBackgroundColor = "#111a2c"
+textColor = "#e9eef7"
+font = "sans serif"
+
+# Defense-in-depth: cap upload size at the Streamlit server layer too,
+# not just in compliance_engine.MAX_EVIDENCE_FILE_BYTES, so oversized
+# uploads are rejected before they even reach our code.
+[server]
+maxUploadSize = 25

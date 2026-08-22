@@ -88,6 +88,47 @@ def get_or_create_encryption_key() -> str:
     return _ensure_env_value("ENCRYPTION_KEY", lambda: Fernet.generate_key().decode())
 
 
+class PasscodeError(Exception):
+    pass
+
+
+MIN_PASSCODE_LENGTH = 6
+
+
+def set_passcode(new_passcode: str) -> None:
+    """
+    Change the app passcode so that it takes effect NOW, not after a restart.
+
+    The Settings page used to call dotenv's set_key() directly, which writes
+    the new value to .env but leaves os.environ holding the old one. Since
+    _ensure_env_value() reads os.environ first (and load_dotenv is called
+    with override=False, so it will never clobber an existing value),
+    check_passcode() kept validating against the OLD passcode for the rest
+    of the process's life — while the UI claimed the change had taken
+    effect. Writing both places is the fix.
+
+    Sessions that are already unlocked stay unlocked: `authenticated` lives
+    in each browser's session state and isn't re-checked per rerun. Restart
+    the app to force everyone back through the gate.
+    """
+    new_passcode = (new_passcode or "").strip()
+    if len(new_passcode) < MIN_PASSCODE_LENGTH:
+        raise PasscodeError(f"Choose a passcode of at least {MIN_PASSCODE_LENGTH} characters.")
+
+    os.environ["APP_PASSCODE"] = new_passcode  # live process — what check_passcode() reads
+    try:
+        if not os.path.exists(_ENV_PATH):
+            open(_ENV_PATH, "a").close()
+        set_key(_ENV_PATH, "APP_PASSCODE", new_passcode)  # survives a restart
+    except OSError as e:
+        raise PasscodeError(
+            f"The passcode is active for this session but could not be saved to .env ({e}), "
+            "so it will revert when the app restarts."
+        ) from e
+
+    _failed_attempts.clear()  # a deliberate change shouldn't inherit an old lockout
+
+
 # ---------------------------------------------------------------------------
 # Passcode brute-force throttling
 #

@@ -32,6 +32,7 @@ with a quota/billing error.
 """
 
 import os
+import re
 import json
 import time
 import random
@@ -200,7 +201,7 @@ def _condensed_requirements_text(pci_data: dict) -> str:
 def analyze_evidence(evidence_text: str, pci_data: dict, target_sub_requirement: str = None,
                       prior_context: str = "") -> dict:
     """
-    Calls Claude to analyze one evidence artifact against the PCI DSS
+    Calls Gemini to analyze one evidence artifact against the PCI DSS
     sub-requirement catalog. Returns a parsed dict matching the schema
     described in SYSTEM_PROMPT_TEMPLATE.
     """
@@ -232,10 +233,65 @@ def analyze_evidence(evidence_text: str, pci_data: dict, target_sub_requirement:
     )
 
     response, model_used = _generate_with_retry(api_keys, user_parts)
-    raw_text = response.text
+    raw_text = _response_text(response)
     parsed = _parse_json_response(raw_text)
+    _drop_unknown_sub_requirements(parsed, pci_data)
     parsed["_model_used"] = model_used  # popped by the caller before persisting/displaying
     return parsed
+
+
+def _response_text(response) -> str:
+    """
+    Pull the text out of a Gemini response, failing with an explanation
+    instead of an AttributeError when there isn't any.
+
+    `response.text` is None rather than a string whenever the model returned
+    no usable candidate — a safety block, or a candidate that hit the output
+    token cap before emitting any content. Calling .strip() on that gave a
+    bare "NoneType has no attribute strip" in the UI, which tells the user
+    nothing about what actually went wrong.
+    """
+    text = getattr(response, "text", None)
+    if text and text.strip():
+        return text
+
+    reason = None
+    candidates = getattr(response, "candidates", None) or []
+    if candidates:
+        reason = getattr(candidates[0], "finish_reason", None)
+    blocked = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+
+    detail = f" (finish reason: {reason})" if reason else ""
+    if blocked:
+        detail += f" (prompt blocked: {blocked})"
+    raise AIAnalyzerError(
+        "The AI returned an empty response" + detail + ". This usually means the model's safety "
+        "filter blocked the request, or the answer was cut off before any content was produced. "
+        "Try again, or run this file through the Local engine instead."
+    )
+
+
+def _drop_unknown_sub_requirements(parsed: dict, pci_data: dict) -> None:
+    """
+    Discard assessments pointing at a sub-requirement that isn't in the
+    catalog, and record what was dropped.
+
+    An LLM occasionally invents a plausible-looking id ("3.7.2" when the
+    catalog stops at 3.7). Those rows used to be written to the database
+    happily and then vanish from every screen, because the dashboard looks up
+    scores BY catalog id — so the evidence appeared to have been analyzed but
+    its score was nowhere, with no error to explain it. Better to drop them
+    at the boundary and say so.
+    """
+    known = {sub["id"] for req in pci_data["requirements"] for sub in req["sub_requirements"]}
+    kept, dropped = [], []
+    for a in parsed.get("assessments", []):
+        (kept if a.get("sub_requirement_id") in known else dropped).append(a)
+    parsed["assessments"] = kept
+    if dropped:
+        parsed["dropped_sub_requirement_ids"] = sorted(
+            {str(a.get("sub_requirement_id")) for a in dropped}
+        )
 
 
 # HTTP 429 with reason RESOURCE_EXHAUSTED means *this key's* quota is used
@@ -311,26 +367,78 @@ def _generate_with_retry(api_keys: list[str], user_parts):
     )
 
 
+MATURITY_LEVELS = ["Initial", "Developing", "Defined", "Managed", "Optimized"]
+
+
+def _coerce_score(value) -> int:
+    """
+    Turn whatever the model put in `sufficiency_score` into an int in 0-100.
+
+    A plain int() call handled 72 and "72" but raised a bare ValueError or
+    TypeError on None, "N/A", "72/100" or 71.5 — which escaped as an
+    unhandled exception rather than an AIAnalyzerError, so the UI showed a
+    stack-trace-flavoured message instead of "AI analysis failed: ...".
+    """
+    if isinstance(value, bool):  # bool is an int subclass; treat it as absent
+        return 0
+    if isinstance(value, (int, float)):
+        return max(0, min(100, int(value)))
+    if isinstance(value, str):
+        m = re.search(r"-?\d+(?:\.\d+)?", value)
+        if m:
+            return max(0, min(100, int(float(m.group()))))
+    return 0
+
+
+def _coerce_str_list(value) -> list:
+    """gaps/recommendations should be arrays of strings; models sometimes send
+    a single string, or a list with nested junk in it."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    return [str(value)]
+
+
 def _parse_json_response(raw_text: str) -> dict:
     cleaned = raw_text.strip()
     if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
+        # Strip a markdown fence and its optional language tag. Shouldn't
+        # normally appear at all, since the request sets
+        # response_mime_type="application/json", but models do occasionally
+        # wrap anyway and it costs nothing to handle.
+        cleaned = cleaned.strip("`").strip()
         if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as e:
         raise AIAnalyzerError(f"AI response was not valid JSON: {e}\nRaw response:\n{raw_text[:1000]}")
 
+    if not isinstance(data, dict):
+        raise AIAnalyzerError(
+            f"AI response was valid JSON but not an object. Raw response:\n{raw_text[:1000]}"
+        )
     if "assessments" not in data or not isinstance(data["assessments"], list):
         raise AIAnalyzerError(f"AI response missing 'assessments' array. Raw response:\n{raw_text[:1000]}")
 
+    normalized = []
     for a in data["assessments"]:
-        a["sufficiency_score"] = max(0, min(100, int(a.get("sufficiency_score", 0))))
-        a.setdefault("maturity_level", "Initial")
-        a.setdefault("rationale", "")
-        a.setdefault("gaps", [])
-        a.setdefault("recommendations", [])
+        if not isinstance(a, dict) or not a.get("sub_requirement_id"):
+            continue  # nothing usable to attach a score to
+        maturity = a.get("maturity_level")
+        normalized.append({
+            "sub_requirement_id": str(a["sub_requirement_id"]).strip(),
+            "sufficiency_score": _coerce_score(a.get("sufficiency_score")),
+            "maturity_level": maturity if maturity in MATURITY_LEVELS else "Initial",
+            "rationale": str(a.get("rationale") or ""),
+            "gaps": _coerce_str_list(a.get("gaps")),
+            "recommendations": _coerce_str_list(a.get("recommendations")),
+        })
+    data["assessments"] = normalized
+    data["evidence_summary"] = str(data.get("evidence_summary") or "")
 
     return data

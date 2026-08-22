@@ -80,6 +80,28 @@ def import_all_data(payload: dict) -> dict:
 
     summary = {}
     with db.get_conn() as conn:
+        # Column names out of the uploaded file end up inside the INSERT
+        # statement's identifier list, where they cannot be parameterized.
+        # Check every one against the table's real schema first, so a
+        # hand-crafted export file can't put arbitrary text into our SQL —
+        # and so a genuinely stale backup fails with a readable message
+        # instead of a raw sqlite3 syntax error.
+        allowed_columns = {
+            table: {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for table in _TABLES
+        }
+        for table, rows in tables.items():
+            for row in rows:
+                if not row:
+                    continue
+                unexpected = set(row.keys()) - allowed_columns[table]
+                if unexpected:
+                    raise ImportError_(
+                        f"Export file has column(s) that don't exist in table '{table}': "
+                        f"{sorted(unexpected)}. This backup was probably written by a different "
+                        "version of VerifAI 360."
+                    )
+
         conn.execute("PRAGMA foreign_keys = OFF")  # allow deleting/reinserting out of FK order
         # Delete in FK-safe order (children before parents), then reinsert
         # in the reverse (parents before children).

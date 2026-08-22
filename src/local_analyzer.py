@@ -177,6 +177,44 @@ def _is_negated(text_norm: str, match_start: int, window_chars: int = 45) -> boo
     return any(w in NEGATION_CUES or w.endswith("n't") for w in preceding_words)
 
 
+def _word_offsets(text_words: list) -> list:
+    """Character offset of each word within the normalized text. Computed once
+    per document and reused for every keyword — the previous implementation
+    re-walked the whole word list for each keyword just to know where a match
+    landed."""
+    offsets = []
+    pos = 0
+    for word in text_words:
+        offsets.append(pos)
+        pos += len(word) + 1  # +1 for the single space _normalize() guarantees
+    return offsets
+
+
+# Float slack for the length band below. Without it a window sitting exactly
+# on the boundary (e.g. a 2-character window against a 3-character keyword at
+# threshold 0.80, whose true ratio is exactly 0.80) gets rejected, because the
+# bound computes as 2.0000000000000004 rather than 2.0. That silently dropped
+# real matches, so the band is widened by an amount far below one character.
+_BAND_EPSILON = 1e-9
+
+
+def _length_band(keyword_len: int, threshold: float):
+    """
+    The range of window lengths that could still clear `threshold`, so
+    everything outside it can be rejected without any comparison at all.
+
+    difflib's ratio is 2*M/T, where M is the number of matched characters and
+    T is the combined length of both strings. M can never exceed the shorter
+    string's length, so a window shorter than
+    `keyword_len * threshold / (2 - threshold)` — or longer than its
+    reciprocal — cannot reach the threshold no matter what its characters
+    are. This is an exact bound, not a heuristic: nothing that could have
+    matched is ever skipped.
+    """
+    return (keyword_len * threshold / (2 - threshold) - _BAND_EPSILON,
+            keyword_len * (2 - threshold) / threshold + _BAND_EPSILON)
+
+
 def _keyword_hits(text_norm: str, keywords: list, fuzzy_threshold: float):
     """Returns (exact_hits, fuzzy_hits, negated_hits). Exact hits are literal
     substring matches (full credit). Fuzzy hits are near-misses — e.g. a typo
@@ -189,32 +227,81 @@ def _keyword_hits(text_norm: str, keywords: list, fuzzy_threshold: float):
     routed to negated_hits instead — it's evidence the control is MISSING,
     not evidence it exists, so it must never count toward the score."""
     text_words = text_norm.split()
+    n_words = len(text_words)
+    offsets = _word_offsets(text_words)
+
+    # Windows of a given word-count are shared by every keyword of that length,
+    # and the same phrase usually recurs many times in one document, so each
+    # set is built once and DEDUPLICATED. Comparing 'access control' against
+    # the same window text forty times cannot produce forty different answers.
+    # First appearance wins, which preserves the original "earliest window with
+    # a strictly better ratio" tie-break exactly.
+    window_cache = {}
+
+    def windows_of(size):
+        if size not in window_cache:
+            first_seen = {}
+            for i in range(0, max(0, n_words - size + 1)):
+                window = text_words[i] if size == 1 else " ".join(text_words[i:i + size])
+                if window not in first_seen:
+                    first_seen[window] = offsets[i]
+            window_cache[size] = list(first_seen.items())
+        return window_cache[size]
+
     exact_hits, fuzzy_hits, negated_hits = [], [], []
+
+    # One reusable matcher instead of constructing a fresh SequenceMatcher per
+    # window. Note the argument order: the keyword must be sequence *a* and the
+    # window sequence *b*, matching the original implementation — difflib's
+    # ratio() is not symmetric, and swapping them changes borderline results.
+    matcher = SequenceMatcher(None)
+
     for kw in keywords:
         kw_norm = (kw or "").lower().strip()
         if not kw_norm:
             continue
+
         m = re.search(re.escape(kw_norm), text_norm)
         if m:
             (negated_hits if _is_negated(text_norm, m.start()) else exact_hits).append(kw)
             continue
+
+        # No exact match — fall back to the fuzzy scan. This previously ran
+        # difflib's full ratio() against every window position in the document
+        # for every keyword. On a real policy PDF (tens of thousands of words
+        # against ~200 curated keywords) that took over a minute with the UI
+        # frozen. Two exact upper-bound filters now reject the overwhelming
+        # majority of candidates before any real comparison happens:
+        #   1. length band  — pure arithmetic, no character comparison at all
+        #   2. quick_ratio  — difflib's own documented upper bound on ratio()
+        # Because both are upper bounds, anything they reject provably could
+        # not have cleared the threshold. The hits this returns are identical
+        # to the previous implementation's at every threshold; the work that
+        # disappeared was arithmetic whose outcome was already decided.
         kw_word_count = len(kw_norm.split())
+        min_len, max_len = _length_band(len(kw_norm), fuzzy_threshold)
+        matcher.set_seq1(kw_norm)
+
         best = 0.0
         best_char_pos = None
-        char_pos = 0
-        for i in range(0, max(0, len(text_words) - kw_word_count + 1)):
-            window_words = text_words[i:i + kw_word_count]
-            window = " ".join(window_words)
-            ratio = _fuzzy_ratio(kw_norm, window)
+        for window, char_pos in windows_of(kw_word_count):
+            window_len = len(window)
+            if window_len < min_len or window_len > max_len:
+                continue
+            matcher.set_seq2(window)
+            if matcher.quick_ratio() < fuzzy_threshold:
+                continue
+            ratio = matcher.ratio()
             if ratio > best:
                 best = ratio
                 best_char_pos = char_pos
-            char_pos += len(text_words[i]) + 1  # advance past this word + the space
-            if best >= 0.999:
-                break
+                if best >= 0.999:
+                    break
+
         if best >= fuzzy_threshold:
             is_neg = best_char_pos is not None and _is_negated(text_norm, best_char_pos)
             (negated_hits if is_neg else fuzzy_hits).append(kw)
+
     return exact_hits, fuzzy_hits, negated_hits
 
 

@@ -121,7 +121,8 @@ Dashboard / Gap Report / Risk pages now reflect the new score automatically
 | `data/pci_dss_data.json` | The condensed PCI DSS requirement catalog the whole app is built around (see the accuracy disclaimer below). |
 | `verifai360.db` | The SQLite database file itself — created automatically the first time you run the app. |
 | `evidence_store/` | Every uploaded file gets copied here, renamed with a timestamp + sanitized filename, then encrypted at rest. |
-| `config.toml` | Streamlit's native theme settings (dark mode, accent color) plus the server-side upload size cap. |
+| `.streamlit/config.toml` | Streamlit's native theme settings (dark mode, accent color) plus the server-side upload size cap. Must live in `.streamlit/` — Streamlit does not read a `config.toml` in the project root. |
+| `src/theme.py` | The app's full stylesheet and design tokens. Colours are defined here once and reused by the Plotly charts, so nothing is hardcoded twice. |
 
 Every source file under `src/` starts with a docstring explaining its
 purpose in more depth, and `app.py` has a short plain-English comment above
@@ -217,7 +218,7 @@ VerifAI360/
 
 ## 9. Design system
 
-The app uses a custom dark theme (`config.toml` for the native
+The app uses a custom dark theme (`.streamlit/config.toml` for the native
 Streamlit theme + injected CSS in `app.py` for cards, badges, and the
 page-header component) rather than default Streamlit styling. Key pieces
 if you're extending a page:
@@ -317,7 +318,7 @@ https://ai.google.dev/gemini-api/docs/pricing.
   the stored file's actual bytes at upload time, stored alongside the evidence record, and shown
   in the Evidence Log, QSA Audit View, and the PDF report — so a hash can be used to verify a file
   on disk hasn't been altered since it was submitted.
-- Upload size is capped both at the Streamlit server layer (`config.toml`,
+- Upload size is capped both at the Streamlit server layer (`.streamlit/config.toml`,
   `maxUploadSize`) and in application code (`compliance_engine.MAX_EVIDENCE_FILE_BYTES`, 25 MB),
   to reduce resource-exhaustion risk from oversized files hitting OCR/PDF parsing.
 - **Prompt injection hardening (OWASP LLM01):** evidence text is untrusted, user-supplied content.

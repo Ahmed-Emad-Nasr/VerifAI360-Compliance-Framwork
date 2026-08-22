@@ -85,6 +85,16 @@ def sha256_of_file(path: str) -> str:
 _sha256_of_file = sha256_of_file  # internal alias, kept for readability at call sites below
 
 
+def _discard_stored_file(path: str) -> None:
+    """Best-effort removal of a working copy in evidence_store/ that no
+    database row will ever reference. Failing to delete it is never worth
+    turning into a user-visible error, so OSError is swallowed."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def load_pci_data() -> dict:
     with open(os.path.join(DATA_DIR, "pci_dss_data.json")) as f:
         return json.load(f)
@@ -100,7 +110,8 @@ ANALYSIS_ENGINES = {"ai": "AI-powered (Gemini)", "local": "Local rule-based (off
 
 
 def process_uploaded_evidence(source_filepath: str, original_filename: str, target_sub_requirement: str = None,
-                               analysis_mode: str = "ai", allow_duplicate: bool = False):
+                               analysis_mode: str = "ai", allow_duplicate: bool = False,
+                               persist: bool = True):
     """
     Full pipeline for one evidence upload:
       1. Copy file into evidence_store/ (plaintext, briefly)
@@ -123,6 +134,16 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
       7. Persist evidence (its text excerpt encrypted too) + every returned
          assessment, tagged with which engine produced it (this is where
          cross-requirement spanning actually gets recorded)
+
+    When `persist=False`, steps 2 and 7 are skipped entirely: no duplicate
+    check, no evidence row, no assessment rows, and the working copy of the
+    file is deleted instead of being kept encrypted in evidence_store/. This
+    is what "Compare AI vs Local" uses — running the same file through two
+    engines to look at them side by side should not write the file into the
+    record twice (which used to double-count it on the dashboard) and should
+    not commit a score the user hasn't chosen yet. The call is still written
+    to the analysis call log either way, because "an engine was run against
+    this file" is exactly the kind of thing an audit trail must not lose.
 
     Returns the parsed analyzer response dict, plus 'analysis_mode'.
     """
@@ -155,7 +176,7 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
     shutil.copyfile(source_filepath, stored_path)
     file_hash = _sha256_of_file(stored_path)
 
-    if not allow_duplicate:
+    if persist and not allow_duplicate:
         existing = db.find_evidence_by_hash(file_hash)
         if existing:
             os.remove(stored_path)  # don't leave an unused plaintext copy behind
@@ -207,6 +228,10 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
             model_used=(ai.MODEL_NAME if analysis_mode == "ai" else None),
             target_sub_requirement=target_sub_requirement, error_message=str(e),
         )
+        # The analysis failed, so no evidence row will ever point at the copy
+        # sitting in evidence_store/. Remove it rather than leaving an
+        # orphaned encrypted blob behind on every failed upload.
+        _discard_stored_file(stored_path)
         raise
 
     db.insert_call_log(
@@ -214,30 +239,35 @@ def process_uploaded_evidence(source_filepath: str, original_filename: str, targ
         target_sub_requirement=target_sub_requirement, assessments_count=len(result.get("assessments", [])),
     )
 
-    evidence_id = db.insert_evidence(
-        filename=original_filename,
-        stored_path=stored_path,
-        evidence_type=evidence_type,
-        target_sub_requirement=target_sub_requirement,
-        raw_text_excerpt=text,
-        sha256=file_hash,
-        encrypt=True,
-    )
-
-    for a in result["assessments"]:
-        db.insert_assessment(
-            evidence_id=evidence_id,
-            sub_requirement_id=a["sub_requirement_id"],
-            is_primary_target=(a["sub_requirement_id"] == target_sub_requirement),
-            sufficiency_score=a["sufficiency_score"],
-            maturity_level=a["maturity_level"],
-            rationale=a["rationale"],
-            gaps=a["gaps"],
-            recommendations=a["recommendations"],
-            analysis_source=analysis_mode,
+    if persist:
+        evidence_id = db.insert_evidence(
+            filename=original_filename,
+            stored_path=stored_path,
+            evidence_type=evidence_type,
+            target_sub_requirement=target_sub_requirement,
+            raw_text_excerpt=text,
+            sha256=file_hash,
+            encrypt=True,
         )
 
+        for a in result["assessments"]:
+            db.insert_assessment(
+                evidence_id=evidence_id,
+                sub_requirement_id=a["sub_requirement_id"],
+                is_primary_target=(a["sub_requirement_id"] == target_sub_requirement),
+                sufficiency_score=a["sufficiency_score"],
+                maturity_level=a["maturity_level"],
+                rationale=a["rationale"],
+                gaps=a["gaps"],
+                recommendations=a["recommendations"],
+                analysis_source=analysis_mode,
+            )
+    else:
+        evidence_id = None
+        _discard_stored_file(stored_path)
+
     result["evidence_id"] = evidence_id
+    result["persisted"] = persist
     result["evidence_type"] = evidence_type
     result["analysis_mode"] = analysis_mode
     return result

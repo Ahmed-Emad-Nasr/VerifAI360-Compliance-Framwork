@@ -73,12 +73,22 @@ def _utcnow_iso() -> str:
 
 @contextmanager
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    # timeout: Streamlit runs each browser session in its own thread, so two
+    # tabs (or a demo where someone else is clicking around) can try to write
+    # at the same moment. Without a timeout the loser raises "database is
+    # locked" instantly; with one it waits for the writer to finish.
+    conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
+    # WAL lets readers keep reading while a write is in progress, which is
+    # most of what this app does — every page render is a burst of reads.
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
         conn.commit()
+    except Exception:
+        conn.rollback()  # never leave a half-applied multi-statement write
+        raise
     finally:
         conn.close()
 
@@ -502,14 +512,77 @@ def get_auto_risk_for_subreq(sub_requirement_id):
         return dict(row) if row else None
 
 
-def reset_all():
+_FINGERPRINT_TABLES = [
+    "evidence", "sub_req_assessment", "risk_register", "cde_scope",
+    "compensating_controls", "testing_tracker", "vendor_register", "app_settings",
+]
+
+
+def data_fingerprint() -> str:
+    """
+    A short string that changes whenever anything a report renders has
+    changed, and stays identical when nothing has.
+
+    Why it exists: report_generator builds the full PDF from scratch every
+    time it's called, and `st.download_button(data=...)` needs its bytes
+    ready up front — so Streamlit was rebuilding the entire report on every
+    single rerun of the Dashboard, including a rerun caused by something as
+    small as toggling a filter. Feeding this fingerprint into an
+    `@st.cache_data` wrapper means the PDF is built once and then reused
+    until the underlying data actually moves.
+
+    Kept deliberately cheap: COUNT + MAX(id) per table are index-backed and
+    read no row data, so calling this on every rerun costs far less than
+    the work it avoids.
+    """
+    parts = []
     with get_conn() as conn:
+        for table in _FINGERPRINT_TABLES:
+            row = conn.execute(f"SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM {table}").fetchone()
+            parts.append(f"{table}:{row[0]}:{row[1]}")
+        # app_settings rows are updated in place (the SAQ type, the AOC signer
+        # fields), so its row count/max-id can stay flat while its contents
+        # change — hash the values themselves for that one table.
+        settings = conn.execute("SELECT key, value FROM app_settings ORDER BY key").fetchall()
+        parts.append(hashlib.sha256(
+            "|".join(f"{r['key']}={r['value']}" for r in settings).encode("utf-8")
+        ).hexdigest()[:16])
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+def reset_all(purge_files: bool = True):
+    """
+    Clear every table.
+
+    Also deletes the stored evidence files those rows pointed at, unless
+    `purge_files=False`. Previously only the database rows were removed, so
+    every "Reset all demo data" left the encrypted blobs behind in
+    evidence_store/ with nothing referencing them — the folder grew on every
+    reset and never shrank. Returns how many files were removed so the caller
+    can say so.
+    """
+    removed = 0
+    with get_conn() as conn:
+        if purge_files:
+            paths = [r["stored_path"] for r in
+                     conn.execute("SELECT stored_path FROM evidence").fetchall()]
+            for path in paths:
+                if not path:
+                    continue
+                try:
+                    os.remove(path)
+                    removed += 1
+                except OSError:
+                    # Already gone, or not ours to delete — never worth failing
+                    # the reset over.
+                    pass
         conn.executescript(
             "DELETE FROM sub_req_assessment; DELETE FROM evidence; "
             "DELETE FROM score_history; DELETE FROM risk_register; "
             "DELETE FROM cde_scope; DELETE FROM compensating_controls; "
             "DELETE FROM testing_tracker; DELETE FROM vendor_register;"
         )
+    return removed
 
 
 # ---------------------------------------------------------------------------

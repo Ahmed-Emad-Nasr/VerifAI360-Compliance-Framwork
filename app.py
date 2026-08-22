@@ -64,310 +64,20 @@ from src.evidence_processor import EvidenceExtractionError
 from src.compliance_engine import EvidenceUploadError, DuplicateEvidenceError
 from src import security as sec
 from src import data_portability as dp
+from src import theme
 
 st.set_page_config(page_title="VerifAI 360 — PCI DSS Compliance", page_icon="🛡️", layout="wide")
 db.init_db()
 
 # ----------------------------------------------------------------------------
 # Theme / global styling
+#
+# The stylesheet used to live here as a ~300-line string literal. It now
+# lives in src/theme.py, which also exports the design tokens the Plotly
+# charts on this page use — so a colour is defined in exactly one place
+# instead of being duplicated between the CSS and every chart call.
 # ----------------------------------------------------------------------------
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-
-    :root {
-        --vf-bg: #060a10;
-        --vf-bg-alt: #0a0f18;
-        --vf-panel: #0e1626;
-        --vf-panel-raised: #121d31;
-        --vf-border: #1f2c45;
-        --vf-border-soft: #172239;
-        --vf-accent: #35d0c0;
-        --vf-accent-2: #7cf0ff;
-        --vf-accent-soft: rgba(53,208,192,0.12);
-        --vf-accent-dim: #1f8a80;
-        --vf-text: #e7ecf5;
-        --vf-muted: #7d8db0;
-        --vf-red: #ff4d5e;
-        --vf-amber: #e0a72e;
-        --vf-green: #3ecf8e;
-        --vf-mono: 'JetBrains Mono', 'Consolas', monospace;
-    }
-
-    /* ---- Base cyber-SOC background: subtle grid + vignette + scanline ---- */
-    html, body, .stApp {
-        background-color: var(--vf-bg);
-        background-image:
-            linear-gradient(rgba(53,208,192,0.045) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(53,208,192,0.045) 1px, transparent 1px),
-            radial-gradient(ellipse 80% 60% at 50% -10%, rgba(53,208,192,0.08), transparent 60%);
-        background-size: 42px 42px, 42px 42px, 100% 100%;
-        color: var(--vf-text);
-        font-family: 'Inter', sans-serif;
-    }
-    .stApp::before {
-        content: "";
-        position: fixed; inset: 0; pointer-events: none; z-index: 9999;
-        background: repeating-linear-gradient(
-            to bottom, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px,
-            transparent 1px, transparent 3px
-        );
-        mix-blend-mode: overlay;
-    }
-    h1, h2, h3, h4 { font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.2px; }
-    p, span, div, label { font-family: 'Inter', sans-serif; }
-    code, .stCodeBlock, [data-testid="stMetricValue"], .vf-mono { font-family: var(--vf-mono) !important; }
-
-    /* remove default streamlit top padding for a tighter, more app-like feel */
-    .block-container { padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1200px; }
-
-    /* thin animated accent line across the very top of the app, HUD-style */
-    div[data-testid="stAppViewContainer"] > div:first-child::before {
-        content: ""; display: block; height: 2px; width: 100%;
-        background: linear-gradient(90deg, transparent, var(--vf-accent), var(--vf-accent-2), var(--vf-accent), transparent);
-        background-size: 200% 100%;
-        animation: vf-scan-x 5s linear infinite;
-        opacity: 0.55;
-    }
-    @keyframes vf-scan-x { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-
-    section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, var(--vf-panel) 0%, var(--vf-bg-alt) 100%);
-        border-right: 1px solid var(--vf-border);
-        box-shadow: 4px 0 24px rgba(0,0,0,0.35);
-    }
-    section[data-testid="stSidebar"] .block-container { padding-top: 1.2rem; }
-
-    /* ---- Page header component (see page_header() helper) ---- */
-    .vf-page-header {
-        display: flex; align-items: center; gap: 14px;
-        padding-bottom: 10px; margin-bottom: 4px;
-        border-bottom: 1px solid var(--vf-border-soft);
-        position: relative;
-    }
-    .vf-page-header::after {
-        content: ""; position: absolute; left: 0; bottom: -1px; height: 1px; width: 120px;
-        background: linear-gradient(90deg, var(--vf-accent), transparent);
-        box-shadow: 0 0 8px 1px rgba(53,208,192,0.6);
-    }
-    .vf-page-header .vf-icon {
-        font-size: 1.7rem; width: 46px; height: 46px; min-width: 46px;
-        display: flex; align-items: center; justify-content: center;
-        background: var(--vf-accent-soft); border: 1px solid rgba(53,208,192,0.35);
-        border-radius: 12px;
-        box-shadow: 0 0 16px -2px rgba(53,208,192,0.5), inset 0 0 12px rgba(53,208,192,0.08);
-    }
-    .vf-page-header h1 {
-        font-size: 1.6rem; margin: 0; line-height: 1.15; font-weight: 700;
-        text-shadow: 0 0 18px rgba(53,208,192,0.25);
-    }
-    .vf-page-header .vf-subtitle {
-        color: var(--vf-muted); font-size: 0.9rem; margin-top: 2px; font-family: var(--vf-mono);
-    }
-
-    /* ---- "About this page" info box ---- */
-    .vf-about-toggle summary { color: var(--vf-accent) !important; font-family: var(--vf-mono); font-size: 0.82rem; }
-    .vf-about-toggle { border: 1px dashed rgba(53,208,192,0.35) !important; background: rgba(53,208,192,0.035) !important; }
-
-    /* ---- Metrics ---- */
-    [data-testid="stMetric"] {
-        background: linear-gradient(160deg, var(--vf-panel) 0%, var(--vf-panel-raised) 130%);
-        border: 1px solid var(--vf-border);
-        border-left: 2px solid var(--vf-accent-dim);
-        border-radius: 10px;
-        padding: 16px 18px 12px 18px;
-        transition: border-color 0.15s ease, box-shadow 0.15s ease;
-    }
-    [data-testid="stMetric"]:hover {
-        border-color: var(--vf-accent-dim);
-        border-left-color: var(--vf-accent);
-        box-shadow: 0 0 20px -6px rgba(53,208,192,0.45);
-    }
-    [data-testid="stMetricLabel"] {
-        color: var(--vf-muted) !important; font-size: 0.78rem !important;
-        font-family: var(--vf-mono) !important; text-transform: uppercase; letter-spacing: 0.6px;
-    }
-    [data-testid="stMetricValue"] { font-family: var(--vf-mono) !important; text-shadow: 0 0 12px rgba(53,208,192,0.2); }
-
-    /* ---- Expanders (used as cards throughout) ---- */
-    div[data-testid="stExpander"] {
-        background: var(--vf-panel);
-        border: 1px solid var(--vf-border);
-        border-radius: 10px;
-        margin-bottom: 10px;
-        overflow: hidden;
-    }
-    div[data-testid="stExpander"] summary { padding: 4px 2px; }
-    div[data-testid="stExpander"]:hover { border-color: var(--vf-accent-dim); }
-
-    /* ---- Tabs ---- */
-    button[data-baseweb="tab"] { font-family: var(--vf-mono) !important; font-size: 0.85rem !important; }
-    button[data-baseweb="tab"][aria-selected="true"] { color: var(--vf-accent) !important; }
-    div[data-baseweb="tab-highlight"] { background-color: var(--vf-accent) !important; box-shadow: 0 0 8px rgba(53,208,192,0.6); }
-    div[data-baseweb="tab-border"] { background-color: var(--vf-border) !important; }
-
-    /* ---- Inputs ---- */
-    .stTextInput input, .stTextArea textarea, .stNumberInput input,
-    div[data-baseweb="select"] > div, div[data-baseweb="input"] {
-        background-color: var(--vf-panel-raised) !important;
-        border-color: var(--vf-border) !important;
-        color: var(--vf-text) !important;
-    }
-    .stTextInput input:focus, .stTextArea textarea:focus {
-        border-color: var(--vf-accent) !important;
-        box-shadow: 0 0 0 1px var(--vf-accent) !important;
-    }
-
-    /* ---- Buttons ---- */
-    .stButton > button {
-        border-radius: 6px !important;
-        font-weight: 600 !important;
-        font-family: var(--vf-mono) !important;
-        border: 1px solid var(--vf-border) !important;
-        transition: all 0.15s ease !important;
-    }
-    .stButton > button:hover {
-        border-color: var(--vf-accent-dim) !important;
-        box-shadow: 0 0 14px -4px rgba(53,208,192,0.5);
-    }
-    .stButton > button[kind="primary"] {
-        background: var(--vf-accent) !important;
-        color: #061012 !important;
-        border: none !important;
-        box-shadow: 0 0 18px -4px rgba(53,208,192,0.7);
-    }
-    .stButton > button[kind="primary"]:hover { box-shadow: 0 0 26px -2px rgba(53,208,192,0.9); }
-    .stDownloadButton > button {
-        border-radius: 6px !important; font-weight: 600 !important; font-family: var(--vf-mono) !important;
-    }
-
-    /* ---- Badges (risk level chips) ---- */
-    .vf-badge {
-        display: inline-block; padding: 3px 11px; border-radius: 4px;
-        font-size: 0.72rem; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
-        font-family: var(--vf-mono);
-    }
-    .vf-badge-critical { background: rgba(255,77,94,0.15); color: #ff8b8f; border: 1px solid rgba(255,77,94,0.45); box-shadow: 0 0 10px -3px rgba(255,77,94,0.6); }
-    .vf-badge-high { background: rgba(224,167,46,0.15); color: #f0c15e; border: 1px solid rgba(224,167,46,0.4); }
-    .vf-badge-medium { background: rgba(224,167,46,0.1); color: #d8c78a; border: 1px solid rgba(224,167,46,0.25); }
-    .vf-badge-low { background: rgba(62,207,142,0.15); color: #71e6ab; border: 1px solid rgba(62,207,142,0.4); }
-
-    /* ---- Demo banner ---- */
-    .vf-demo-banner {
-        background: rgba(224,167,46,0.07);
-        border: 1px solid rgba(224,167,46,0.3);
-        border-left: 3px solid var(--vf-amber);
-        border-radius: 8px;
-        padding: 12px 16px;
-        margin-bottom: 16px;
-        color: #f0c15e;
-        font-size: 0.88rem;
-        font-family: var(--vf-mono);
-    }
-
-    /* ---- Sidebar nav section captions ---- */
-    .vf-nav-caption {
-        color: var(--vf-muted); font-size: 0.7rem; font-weight: 700;
-        text-transform: uppercase; letter-spacing: 1px;
-        margin: 14px 0 2px 4px; font-family: var(--vf-mono);
-    }
-    .vf-brand-cursor {
-        display: inline-block; width: 8px; height: 1.1em; background: var(--vf-accent);
-        margin-left: 2px; vertical-align: text-bottom; animation: vf-blink 1.1s steps(1) infinite;
-        box-shadow: 0 0 6px var(--vf-accent);
-    }
-    @keyframes vf-blink { 50% { opacity: 0; } }
-
-    /* tighten default streamlit radio spacing in sidebar for a nav-menu feel */
-    section[data-testid="stSidebar"] div[role="radiogroup"] label {
-        padding: 4px 8px; border-radius: 6px; font-size: 0.92rem;
-        transition: background 0.15s ease;
-    }
-    section[data-testid="stSidebar"] div[role="radiogroup"] label:hover { background: rgba(53,208,192,0.06); }
-
-    /* ---- Scrollbar ---- */
-    ::-webkit-scrollbar { width: 10px; height: 10px; }
-    ::-webkit-scrollbar-track { background: var(--vf-bg-alt); }
-    ::-webkit-scrollbar-thumb { background: var(--vf-border); border-radius: 6px; }
-    ::-webkit-scrollbar-thumb:hover { background: var(--vf-accent-dim); }
-
-    hr { border-color: var(--vf-border-soft) !important; }
-
-    /* ---- Extra cyberpunk/cyber-SOC touches ---- */
-
-    /* corner brackets on metrics + expander cards, like a HUD targeting reticle */
-    [data-testid="stMetric"], div[data-testid="stExpander"], .vf-hud-card {
-        position: relative;
-    }
-    [data-testid="stMetric"]::before, [data-testid="stMetric"]::after,
-    div[data-testid="stExpander"]::before, div[data-testid="stExpander"]::after {
-        content: ""; position: absolute; width: 10px; height: 10px;
-        border-color: var(--vf-accent); opacity: 0.65; pointer-events: none;
-    }
-    [data-testid="stMetric"]::before, div[data-testid="stExpander"]::before {
-        top: -1px; left: -1px; border-top: 2px solid; border-left: 2px solid;
-    }
-    [data-testid="stMetric"]::after, div[data-testid="stExpander"]::after {
-        bottom: -1px; right: -1px; border-bottom: 2px solid; border-right: 2px solid;
-    }
-
-    /* glitch flicker on the sidebar brand title, subtle and occasional (not annoying) */
-    @keyframes vf-glitch {
-        0%, 92%, 100% { text-shadow: 0 0 18px rgba(53,208,192,0.25); transform: translate(0,0); }
-        93% { text-shadow: -2px 0 var(--vf-red), 2px 0 var(--vf-accent-2); transform: translate(-1px,0); }
-        94% { text-shadow: 2px 0 var(--vf-red), -2px 0 var(--vf-accent-2); transform: translate(1px,0); }
-        95% { text-shadow: 0 0 18px rgba(53,208,192,0.25); transform: translate(0,0); }
-    }
-    .vf-brand-title { animation: vf-glitch 7s infinite; }
-
-    /* small system-status ticker footer in the sidebar */
-    .vf-status-ticker {
-        display: flex; align-items: center; gap: 6px; font-family: var(--vf-mono);
-        font-size: 0.72rem; color: var(--vf-muted); padding: 8px 2px 2px 2px;
-    }
-    .vf-status-dot {
-        width: 7px; height: 7px; border-radius: 50%; background: var(--vf-green);
-        box-shadow: 0 0 6px var(--vf-green); animation: vf-pulse 2s ease-in-out infinite;
-    }
-    .vf-status-dot.vf-status-dim { background: var(--vf-muted); box-shadow: none; animation: none; }
-    @keyframes vf-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-
-    /* encrypted / secure badge, used near evidence & security indicators */
-    .vf-secure-badge {
-        display: inline-flex; align-items: center; gap: 5px;
-        font-family: var(--vf-mono); font-size: 0.72rem; font-weight: 600;
-        color: #71e6ab; background: rgba(62,207,142,0.1); border: 1px solid rgba(62,207,142,0.35);
-        border-radius: 4px; padding: 2px 9px;
-    }
-
-    /* pulsing ring on critical-severity badges specifically, extra urgency cue */
-    .vf-badge-critical { animation: vf-critical-pulse 1.8s ease-in-out infinite; }
-    @keyframes vf-critical-pulse {
-        0%, 100% { box-shadow: 0 0 10px -3px rgba(255,77,94,0.6); }
-        50% { box-shadow: 0 0 16px 0px rgba(255,77,94,0.9); }
-    }
-
-    /* reviewer / read-only mode banner */
-    .vf-readonly-banner {
-        background: rgba(224,167,46,0.08); border: 1px solid rgba(224,167,46,0.35);
-        border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;
-        font-family: var(--vf-mono); font-size: 0.82rem; color: #f0c15e;
-        display: flex; align-items: center; gap: 8px;
-    }
-
-    /* login screen container */
-    .vf-login-wrap {
-        max-width: 420px; margin: 8vh auto 0 auto; text-align: center;
-    }
-    .vf-login-wrap .vf-icon-big {
-        font-size: 3rem; margin-bottom: 6px;
-        filter: drop-shadow(0 0 18px rgba(53,208,192,0.5));
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+theme.inject()
 
 # ----------------------------------------------------------------------------
 # App-level passcode gate (see src/security.py for the full design rationale).
@@ -390,9 +100,8 @@ if not st.session_state.get("authenticated", False):
     st.markdown('<div class="vf-login-wrap">', unsafe_allow_html=True)
     st.markdown(
         '<div class="vf-icon-big">🛡️</div>'
-        '<h1 style="font-family:\'Space Grotesk\',sans-serif;margin-bottom:0;">VerifAI 360</h1>'
-        '<p style="color:var(--vf-muted);font-family:var(--vf-mono);font-size:0.85rem;">'
-        'RESTRICTED ACCESS — ENTER PASSCODE TO CONTINUE</p>',
+        '<h1>VerifAI 360</h1>'
+        '<p class="vf-login-tag">RESTRICTED ACCESS — ENTER PASSCODE TO CONTINUE</p>',
         unsafe_allow_html=True,
     )
 
@@ -450,6 +159,31 @@ def page_header(icon: str, title: str, subtitle: str = "", about: str = ""):
     st.write("")  # small breathing room below the header
 
 
+
+# ----------------------------------------------------------------------------
+# Cached report builders
+#
+# st.download_button needs its bytes up front, so calling
+# rg.generate_pdf_report() inline meant the whole PDF was rebuilt on EVERY
+# rerun of the page — every filter change, every expander click. These
+# wrappers are keyed on db.data_fingerprint(), so a report is built once and
+# then reused until the underlying data actually changes.
+# ----------------------------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def cached_full_report(_fingerprint: str) -> bytes:
+    return rg.generate_pdf_report()
+
+
+@st.cache_data(show_spinner=False)
+def cached_executive_summary(_fingerprint: str) -> bytes:
+    return rg.generate_executive_summary_pdf()
+
+
+@st.cache_data(show_spinner=False)
+def cached_data_export(_fingerprint: str) -> str:
+    return dp.export_all_data_json()
+
+
 def risk_badge(level: str) -> str:
     cls = {"Critical": "vf-badge-critical", "High": "vf-badge-high",
            "Medium": "vf-badge-medium", "Low": "vf-badge-low"}.get(level, "vf-badge-low")
@@ -481,21 +215,67 @@ def t(en: str, ar: str) -> str:
 
 st.sidebar.markdown(
     """
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:2px;">
-        <span style="font-size:1.6rem;">🛡️</span>
-        <span class="vf-brand-title" style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.25rem;color:#e7ecf5;">
-            VerifAI 360<span class="vf-brand-cursor"></span>
-        </span>
+    <div class="vf-brand">
+        <span style="font-size:1.55rem;">🛡️</span>
+        <span class="vf-brand-title">VerifAI 360<span class="vf-brand-cursor"></span></span>
     </div>
     """,
     unsafe_allow_html=True,
 )
 st.sidebar.caption(t("AI-driven PCI DSS self-assessment", "تقييم ذاتي لمعيار PCI DSS مدعوم بالذكاء الاصطناعي"))
 
+_tt_counts = ce.testing_tracker_summary()
+_overdue_suffix = f" ({_tt_counts['Overdue']} overdue)" if _tt_counts["Overdue"] else ""
+
+_core_labels_en = [
+    "🎯 SAQ Scoping",
+    "📤 Upload & Analyze",
+    "📊 Compliance Dashboard",
+    "🗺️ CDE Scope",
+    "🛡️ Compensating Controls",
+    f"🧪 Testing Tracker (Req 11){_overdue_suffix}",
+    "🤝 Vendor / TPSP Register",
+    "⚠️ Identified Risks",
+    "🕳️ Gap Report",
+    "📚 Requirement Explorer",
+    "🗂️ Evidence Log",
+]
+_core_labels_ar = [
+    "🎯 نطاق SAQ",
+    "📤 رفع وتحليل الأدلة",
+    "📊 لوحة الامتثال",
+    "🗺️ نطاق CDE",
+    "🛡️ الضوابط التعويضية",
+    f"🧪 متابعة الاختبارات (متطلب 11){_overdue_suffix}",
+    "🤝 سجل الموردين",
+    "⚠️ المخاطر المرصودة",
+    "🕳️ تقرير الفجوات",
+    "📚 دليل متطلبات PCI DSS",
+    "🗂️ سجل الأدلة",
+]
+# Pair the two labels each page has so the language toggle can swap one
+# for the other without losing track of which page the user is on.
+_LANG_TWIN = {}
+for _en, _ar in zip(_core_labels_en, _core_labels_ar):
+    _pair = {"en": _en, "ar": _ar}
+    _LANG_TWIN[_en] = _pair
+    _LANG_TWIN[_ar] = _pair
+
 lang_col, review_col = st.sidebar.columns(2)
 with lang_col:
     if st.button("🇬🇧 EN" if LANG == "ar" else "🇪🇬 AR", key="_lang_toggle", width='stretch'):
-        st.session_state["lang"] = "en" if LANG == "ar" else "ar"
+        new_lang = "en" if LANG == "ar" else "ar"
+        # Carry the currently-open page across the switch. The nav radio's
+        # options are rebuilt in the new language on the next run, so its
+        # stored value would otherwise no longer be one of them and the
+        # highlight would silently snap back to the first item while a
+        # different page stayed on screen.
+        _active = st.session_state.get("_active_page")
+        if _active in _LANG_TWIN:
+            twin = _LANG_TWIN[_active][new_lang]
+            st.session_state["_active_page"] = twin
+            st.session_state["_core_radio"] = twin
+        st.session_state["lang"] = new_lang
         st.rerun()
 with review_col:
     reviewer_mode = st.toggle("🔒 " + t("Reviewer", "مراجعة فقط"), key="reviewer_mode",
@@ -527,37 +307,16 @@ def _activate_settings():
     st.session_state["_active_page"] = st.session_state["_settings_radio"]
 
 
-_tt_counts = ce.testing_tracker_summary()
-_overdue_suffix = f" ({_tt_counts['Overdue']} overdue)" if _tt_counts["Overdue"] else ""
-
-_core_labels_en = [
-    "🎯 SAQ Scoping",
-    "📤 Upload & Analyze",
-    "📊 Compliance Dashboard",
-    "🗺️ CDE Scope",
-    "🛡️ Compensating Controls",
-    f"🧪 Testing Tracker (Req 11){_overdue_suffix}",
-    "🤝 Vendor / TPSP Register",
-    "⚠️ Identified Risks",
-    "🕳️ Gap Report",
-    "📚 Requirement Explorer",
-    "🗂️ Evidence Log",
-]
-_core_labels_ar = [
-    "🎯 نطاق SAQ",
-    "📤 رفع وتحليل الأدلة",
-    "📊 لوحة الامتثال",
-    "🗺️ نطاق CDE",
-    "🛡️ الضوابط التعويضية",
-    f"🧪 متابعة الاختبارات (متطلب 11){_overdue_suffix}",
-    "🤝 سجل الموردين",
-    "⚠️ المخاطر المرصودة",
-    "🕳️ تقرير الفجوات",
-    "📚 دليل متطلبات PCI DSS",
-    "🗂️ سجل الأدلة",
-]
 _core_labels = _core_labels_ar if LANG == "ar" else _core_labels_en
-_core_id_by_label = dict(zip(_core_labels, _core_labels_en))  # map back to the stable English id
+# Map BOTH language's labels back to the stable English id, not just the
+# currently-displayed one. `_active_page` below persists across reruns, so
+# right after a language toggle it still holds the label from the PREVIOUS
+# language — if that label isn't in this map, page-matching falls through
+# every `elif` and the user gets a blank screen.
+_core_id_by_label = {
+    **dict(zip(_core_labels_ar, _core_labels_en)),
+    **dict(zip(_core_labels_en, _core_labels_en)),
+}
 
 core_page = st.sidebar.radio(
     "Navigate", _core_labels, label_visibility="collapsed", key="_core_radio", on_change=_activate_core,
@@ -621,8 +380,11 @@ else:
         unsafe_allow_html=True,
     )
 if st.sidebar.button("⚠️ Reset all demo data", disabled=reviewer_mode):
-    db.reset_all()
-    st.sidebar.success("All evidence, scores, and risks cleared.")
+    _removed = db.reset_all()
+    st.cache_data.clear()  # the cached PDFs describe data that no longer exists
+    st.sidebar.success(
+        f"All evidence, scores, and risks cleared ({_removed} stored evidence file(s) deleted)."
+    )
     st.rerun()
 
 st.sidebar.markdown(
@@ -632,7 +394,7 @@ st.sidebar.markdown(
         <span style="margin-left:auto;">🔒 ENCRYPTED</span>
     </div>
     <div class="vf-status-ticker">
-        <span class="vf-status-dot {'vf-status-dim' if not reviewer_mode else ''}"></span>
+        <span class="vf-status-dot {'vf-status-amber' if reviewer_mode else ''}"></span>
         {'READ-ONLY' if reviewer_mode else 'READ/WRITE'}
         <span style="margin-left:auto;">v1.1</span>
     </div>
@@ -705,7 +467,8 @@ if page == "Upload & Analyze":
     compare_mode = st.checkbox(
         "🔬 Compare AI vs Local side by side (single file only)",
         help="Runs both engines on the same file and shows their results next to each other — useful "
-             "for sanity-checking the Local engine's scores against the AI's deeper read.",
+             "for sanity-checking the Local engine's scores against the AI's deeper read. Nothing is "
+             "saved in this mode: pick an engine and run it normally to record a score.",
     )
 
     if compare_mode:
@@ -757,13 +520,14 @@ if page == "Upload & Analyze":
         uploaded_files = uploaded_files[:1]
 
 
-    def _run_one_engine(tmp_path, filename, mode, allow_dup):
+    def _run_one_engine(tmp_path, filename, mode, allow_dup, persist=True):
         """Runs process_uploaded_evidence for one file+engine, translating every known exception into
         a (result, error_message, duplicate_error) tuple instead of raising, so the caller can render
         results for whichever files/engines succeeded even if others in the same batch failed."""
         try:
             result = ce.process_uploaded_evidence(tmp_path, filename, target_id,
-                                                    analysis_mode=mode, allow_duplicate=allow_dup)
+                                                    analysis_mode=mode, allow_duplicate=allow_dup,
+                                                    persist=persist)
             return result, None, None
         except DuplicateEvidenceError as e:
             return None, None, e
@@ -782,6 +546,14 @@ if page == "Upload & Analyze":
         st.success(f"Analysis complete via **{engine_label}** — evidence recognized as: "
                    f"**{result['evidence_type']}**")
         st.info(result.get("evidence_summary", ""))
+        dropped = result.get("dropped_sub_requirement_ids")
+        if dropped:
+            st.warning(
+                "The AI referenced sub-requirement(s) that aren't in the bundled PCI DSS catalog: "
+                + ", ".join(dropped)
+                + ". They were discarded rather than saved, because a score filed against an "
+                "unknown id would never appear on the dashboard."
+            )
         assessments = sorted(result["assessments"], key=lambda a: -a["sufficiency_score"])
         if not assessments:
             st.warning("No relevant PCI DSS sub-requirement was found for this evidence in the catalog.")
@@ -822,36 +594,35 @@ if page == "Upload & Analyze":
             st.markdown(f"#### 📄 {uploaded.name}")
 
             if compare_mode:
-                spinner_text = "Running both engines..."
-                with st.spinner(spinner_text):
-                    r_ai, err_ai, dup_ai = _run_one_engine(tmp_path, uploaded.name, "ai", allow_dup)
-                    r_local, err_local, dup_local = (None, None, None)
-                    dup = dup_ai or dup_local
-                    if not dup and (r_ai or not err_ai):
-                        # Only run the second engine (and its own duplicate check) if the first
-                        # didn't already hit a duplicate — avoids double-flagging the same file.
-                        r_local, err_local, dup_local = _run_one_engine(tmp_path, uploaded.name, "local", True)
-                if dup_ai:
-                    st.warning(f"⚠️ {dup_ai} Analyze anyway?")
-                    if st.button("Analyze anyway", key=f"dup_{file_hash}", disabled=reviewer_mode):
-                        st.session_state[f"_allow_dup_{file_hash}"] = True
-                        st.rerun()
-                else:
-                    ccol1, ccol2 = st.columns(2)
-                    with ccol1:
-                        st.markdown("**🤖 AI (Gemini)**")
-                        if err_ai:
-                            st.error(err_ai)
-                        elif r_ai:
-                            _render_assessments(r_ai)
-                            any_success = True
-                    with ccol2:
-                        st.markdown("**🧩 Local (offline)**")
-                        if err_local:
-                            st.error(err_local)
-                        elif r_local:
-                            _render_assessments(r_local)
-                            any_success = True
+                # Compare mode is a read-only side-by-side: both engines run with
+                # persist=False. Previously the AI half saved an evidence row and
+                # then the Local half saved a SECOND one for the same bytes, so a
+                # single comparison counted the file twice on the dashboard and
+                # left two scores in the register. Nothing is committed here — the
+                # user picks an engine and re-runs to record a result.
+                with st.spinner("Running both engines (comparison only — nothing is saved)..."):
+                    r_ai, err_ai, _ = _run_one_engine(tmp_path, uploaded.name, "ai", True, persist=False)
+                    r_local, err_local, _ = _run_one_engine(tmp_path, uploaded.name, "local", True, persist=False)
+
+                ccol1, ccol2 = st.columns(2)
+                with ccol1:
+                    st.markdown("**🤖 AI (Gemini)**")
+                    if err_ai:
+                        st.error(err_ai)
+                    elif r_ai:
+                        _render_assessments(r_ai)
+                with ccol2:
+                    st.markdown("**🧩 Local (offline)**")
+                    if err_local:
+                        st.error(err_local)
+                    elif r_local:
+                        _render_assessments(r_local)
+
+                if r_ai or r_local:
+                    st.info(
+                        "Comparison only — neither result was saved. Turn off Compare mode and run "
+                        "the engine you want to keep to record a score against these sub-requirements."
+                    )
             else:
                 spinner_text = (
                     "Extracting evidence and running AI compliance analysis..."
@@ -924,7 +695,7 @@ elif page == "Compliance Dashboard":
 
     st.download_button(
         "📄 Executive summary (1-page PDF)",
-        rg.generate_executive_summary_pdf(),
+        cached_executive_summary(db.data_fingerprint()),
         file_name=f"verifai360_executive_summary_{datetime.date.today().isoformat()}.pdf",
         mime="application/pdf",
         help="A short, manager-facing PDF: headline %, SAQ scope, and per-requirement breakdown — "
@@ -950,10 +721,11 @@ elif page == "Compliance Dashboard":
         [{"Requirement": f"{r['id']}. {r['title']}", "Compliance %": r["pct"]} for r in in_scope_reqs]
     )
     fig = px.bar(df, x="Compliance %", y="Requirement", orientation="h", range_x=[0, 100],
-                 color="Compliance %", color_continuous_scale=["#e5484d", "#e0a72e", "#3ecf8e"])
-    fig.update_layout(height=max(180, 60 * len(in_scope_reqs)), yaxis={"categoryorder": "total ascending"},
-                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                       font_color="#e7ecf5")
+                 color="Compliance %", color_continuous_scale=theme.CHART_SCALE)
+    fig.update_layout(**theme.plotly_layout(
+        height=max(180, 60 * len(in_scope_reqs)),
+        yaxis={"categoryorder": "total ascending"},
+    ))
     st.plotly_chart(fig, width='stretch')
     if out_scope_reqs:
         st.caption(
@@ -973,10 +745,10 @@ elif page == "Compliance Dashboard":
             fig2 = go.Figure()
             fig2.add_trace(go.Scatter(x=trend["recorded_at"], y=trend["cumulative_avg"],
                                        mode="lines+markers", name="Running average score",
-                                       line=dict(color="#35d0c0", width=3)))
-            fig2.update_layout(height=340, yaxis_title="Avg sufficiency score", xaxis_title="Time",
-                                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                font_color="#e7ecf5")
+                                       line=dict(color=theme.CHART_LINE, width=3)))
+            fig2.update_layout(**theme.plotly_layout(
+                height=340, yaxis_title="Avg sufficiency score", xaxis_title="Time",
+            ))
             st.plotly_chart(fig2, width='stretch')
         else:
             st.caption("No assessments yet — upload evidence to start building the maturity trend.")
@@ -988,13 +760,13 @@ elif page == "Compliance Dashboard":
             z=matrix,
             x=["1", "2", "3", "4", "5"],
             y=["5", "4", "3", "2", "1"],
-            colorscale=[[0, "#141c2b"], [0.5, "#e0a72e"], [1, "#e5484d"]],
+            colorscale=theme.HEATMAP_SCALE,
             showscale=False,
             hovertemplate="Likelihood %{x}, Impact %{y}<br>Risks: %{z}<extra></extra>",
         ))
-        fig3.update_layout(height=340, xaxis_title="Likelihood", yaxis_title="Impact",
-                            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                            font_color="#e7ecf5")
+        fig3.update_layout(**theme.plotly_layout(
+            height=340, xaxis_title="Likelihood", yaxis_title="Impact",
+        ))
         st.plotly_chart(fig3, width='stretch')
         if exposure["critical_open"]:
             st.caption(f"⚠️ {exposure['critical_open']} Critical risk(s) currently open.")
@@ -1024,7 +796,7 @@ elif page == "Compliance Dashboard":
         st.write("")
         st.download_button(
             "⬇️ Download PDF report",
-            rg.generate_pdf_report(),
+            cached_full_report(db.data_fingerprint()),
             file_name=f"verifai360_compliance_report_{datetime.date.today().isoformat()}.pdf",
             mime="application/pdf",
             type="primary",
@@ -1074,12 +846,6 @@ elif page == "Compliance Dashboard":
             mime="application/pdf",
         )
 
-# ----------------------------------------------------------------------------
-# NOTE: "Identified Risks" is rendered as a section further up inside the
-# Compliance Dashboard block above (it shares that page's sidebar entry),
-# not as its own separate "elif" branch — that's why there's no
-# `elif page == "Identified Risks":` here.
-# ----------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------
 # PAGE: SAQ Type Selection & Scoping
@@ -1422,9 +1188,15 @@ elif page == "Testing Tracker (Req 11)":
                 new_last = ec1.date_input(
                     "Update last performed", value=None, key=f"last_{it['id']}"
                 )
+                # next_due_date is required at insert time, but a restored
+                # backup can still contain a null or malformed value — don't
+                # let one bad row take down the page.
+                try:
+                    _cur_due = datetime.date.fromisoformat(it["next_due_date"])
+                except (TypeError, ValueError):
+                    _cur_due = None
                 new_next = ec2.date_input(
-                    "Update next due", value=datetime.date.fromisoformat(it["next_due_date"]),
-                    key=f"next_{it['id']}"
+                    "Update next due", value=_cur_due, key=f"next_{it['id']}"
                 )
                 bc1, bc2, bc3 = st.columns([1, 1, 4])
                 with bc1:
@@ -1657,8 +1429,13 @@ elif page == "Identified Risks":
                     st.markdown(r["mitigation_plan"])
 
                 ec1, ec2, ec3, ec4 = st.columns(4)
+                # A restored backup (or a hand-edited DB) can carry a status
+                # string that isn't one of ours; .index() raised ValueError and
+                # took the whole page down. Fall back to the first option.
+                _status_index = (re_.STATUS_OPTIONS.index(r["status"])
+                                 if r["status"] in re_.STATUS_OPTIONS else 0)
                 new_status = ec1.selectbox("Status", re_.STATUS_OPTIONS,
-                                            index=re_.STATUS_OPTIONS.index(r["status"]),
+                                            index=_status_index,
                                             key=f"status_{r['id']}")
                 new_owner = ec2.text_input("Owner", value=r["owner"] or "", key=f"owner_{r['id']}")
                 new_likelihood = ec3.slider("Likelihood", 1, 5, r["likelihood"], key=f"like_{r['id']}")
@@ -1968,7 +1745,7 @@ elif page == "QSA Audit View (demo)":
 
     st.download_button(
         "📄 Generate audit PDF",
-        rg.generate_pdf_report(),
+        cached_full_report(db.data_fingerprint()),
         file_name=f"verifai360_audit_report_{datetime.date.today().isoformat()}.pdf",
         mime="application/pdf",
         type="primary",
@@ -2075,7 +1852,7 @@ elif page == "Settings & Security":
         with bcol2:
             if st.button("↺ Reset to defaults", disabled=reviewer_mode, width='stretch'):
                 db.set_settings_json("local_engine_weights", {})
-                st.success("Reset — reload this page to see the default values.")
+                st.rerun()  # so the sliders redraw at their defaults immediately
 
     with tab_security:
         st.markdown("##### Passcode gate")
@@ -2087,13 +1864,12 @@ elif page == "Settings & Security":
         with st.form("change_passcode_form"):
             new_pc = st.text_input("Set a new passcode", type="password", disabled=reviewer_mode)
             if st.form_submit_button("Update passcode", disabled=reviewer_mode):
-                if len(new_pc.strip()) < 6:
-                    st.error("Choose a passcode of at least 6 characters.")
-                else:
-                    from dotenv import set_key
-                    set_key(sec._ENV_PATH, "APP_PASSCODE", new_pc.strip())
-                    st.success("Passcode updated. It takes effect the next time someone logs in "
-                               "(restart the app to also clear anyone else's already-open session).")
+                try:
+                    sec.set_passcode(new_pc)
+                    st.success("Passcode updated. New logins use it immediately. Sessions that are "
+                               "already unlocked stay open until the app is restarted.")
+                except sec.PasscodeError as e:
+                    st.error(str(e))
 
         st.divider()
         st.markdown("##### Encryption at rest")
@@ -2120,7 +1896,7 @@ elif page == "Settings & Security":
         )
         st.download_button(
             "⬇️ Export all data as JSON",
-            dp.export_all_data_json(),
+            cached_data_export(db.data_fingerprint()),
             file_name=f"verifai360_export_{datetime.date.today().isoformat()}.json",
             mime="application/json",
             width='stretch',
